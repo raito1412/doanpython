@@ -160,6 +160,7 @@ address_keywords = [
     'dia chi',
     'noi o hien tai',
     'TP HCM'
+    'Viet Nam'
 ]
 
 address_anchor_y_list = []
