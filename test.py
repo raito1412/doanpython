@@ -7,8 +7,8 @@ import unicodedata
 # CẤU HÌNH
 # =========================
 
-image_path = 'anh_test.jpg'
-output_path = 'redacted_output.jpg'
+image_path = 'anh_test.png'
+output_path = 'redacted_output.png'
 
 reader = easyocr.Reader(['vi', 'en'], gpu=False)
 
@@ -58,6 +58,81 @@ def redact_rect(img, x1, y1, x2, y2, padding=8):
     y2 = min(img_h, int(y2) + padding)
 
     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), -1)
+
+def pixelate_region(img, x1, y1, x2, y2, blocks=12):
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(img.shape[1], x2)
+    y2 = min(img.shape[0], y2)
+
+    roi = img[y1:y2, x1:x2]
+
+    if roi.size == 0:
+        return
+
+    h, w = roi.shape[:2]
+
+    # thu nhỏ mạnh
+    temp = cv2.resize(
+        roi,
+        (blocks, blocks),
+        interpolation=cv2.INTER_LINEAR
+    )
+
+    # phóng to lại để tạo pixel effect
+    pixelated = cv2.resize(
+        temp,
+        (w, h),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    img[y1:y2, x1:x2] = pixelated
+
+def detect_and_redact_codes(img):
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # ====================================
+    # QR CODE
+    # ====================================
+
+    qr_detector = cv2.QRCodeDetector()
+
+    scale = 3
+
+    big = cv2.resize(
+        gray,
+        None,
+        fx=scale,
+        fy=scale,
+        interpolation=cv2.INTER_CUBIC
+    )
+
+    retval, points = qr_detector.detectMulti(big)
+
+    if retval:
+
+        for qr_points in points:
+
+            qr_points = qr_points / scale
+
+            xs = [p[0] for p in qr_points]
+            ys = [p[1] for p in qr_points]
+
+            x1 = int(min(xs))
+            y1 = int(min(ys))
+            x2 = int(max(xs))
+            y2 = int(max(ys))
+
+            pixelate_region(
+                img,
+                x1,
+                y1,
+                x2,
+                y2,
+                blocks=8
+            )
 
 def redact_ratio_area(img, area, padding=0):
     img_h, img_w = img.shape[:2]
@@ -261,10 +336,37 @@ vietnam_address_words = [
 
 img = cv2.imread(image_path)
 
-if img is None:
-    raise FileNotFoundError(
-        f"Không đọc được ảnh: {image_path}. Hãy để ảnh cùng thư mục với file Python."
+# =========================
+# PHÁT HIỆN KHUÔN MẶT
+# =========================
+
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+)
+
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+faces = face_cascade.detectMultiScale(
+    gray,
+    scaleFactor=1.1,
+    minNeighbors=5,
+    minSize=(40, 40)
+)
+
+for (x, y, w, h) in faces:
+     pixelate_region(
+        img,
+        x,
+        y,
+        x + w,
+        y + h,
+        blocks=8
     )
+# =========================
+# QR CODE 
+# =========================
+
+detect_and_redact_codes(img)
 
 # =========================
 # OCR
