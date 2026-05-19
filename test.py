@@ -89,50 +89,195 @@ def pixelate_region(img, x1, y1, x2, y2, blocks=12):
 
     img[y1:y2, x1:x2] = pixelated
 
-def detect_and_redact_codes(img):
+def preprocess_for_qr(gray):
+
+    versions = []
+
+    # ảnh gốc
+    versions.append(gray)
+
+    # sharpen nhẹ
+    blur = cv2.GaussianBlur(gray, (0, 0), 2)
+
+    sharpen = cv2.addWeighted(
+        gray,
+        1.3,
+        blur,
+        -0.3,
+        0
+    )
+
+    versions.append(sharpen)
+
+    return versions
+# PHÁT HIỆN QR CODE 
+# =========================
+# QR CODE DETECTION 
+# =========================
+
+def detect_qr_opencv(img, detector):
+
+    qr_boxes = []
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # ====================================
-    # QR CODE
-    # ====================================
+    # sharpen nhẹ để tăng detect QR nhỏ
+    blur = cv2.GaussianBlur(gray, (0, 0), 2)
+
+    sharpen = cv2.addWeighted(
+        gray,
+        1.3,
+        blur,
+        -0.3,
+        0
+    )
+
+    # chỉ dùng 2 phiên bản để tăng tốc
+    processed_images = [
+        gray,
+        sharpen
+    ]
+
+    # scale vừa đủ mạnh nhưng vẫn nhanh
+    scales = [1.0, 2.0]
+
+    for proc in processed_images:
+
+        for scale in scales:
+
+            resized = cv2.resize(
+                proc,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_LINEAR
+            )
+
+            try:
+
+                retval, points = detector.detectMulti(resized)
+
+                if retval and points is not None:
+
+                    for qr_points in points:
+
+                        # scale ngược lại
+                        qr_points = qr_points / scale
+
+                        xs = [p[0] for p in qr_points]
+                        ys = [p[1] for p in qr_points]
+
+                        x1 = int(min(xs))
+                        y1 = int(min(ys))
+                        x2 = int(max(xs))
+                        y2 = int(max(ys))
+
+                        # lọc box quá nhỏ / lỗi
+                        w = x2 - x1
+                        h = y2 - y1
+
+                        if w < 20 or h < 20:
+                            continue
+
+                        qr_boxes.append((x1, y1, x2, y2))
+
+            except:
+                pass
+
+    return qr_boxes
+
+
+# =========================
+# GỘP QR GẦN NHAU
+# =========================
+
+def merge_nearby_boxes(boxes, distance=5):
+
+    if not boxes:
+        return []
+
+    merged = []
+
+    used = [False] * len(boxes)
+
+    for i in range(len(boxes)):
+
+        if used[i]:
+            continue
+
+        x1, y1, x2, y2 = boxes[i]
+
+        used[i] = True
+
+        changed = True
+
+        while changed:
+
+            changed = False
+
+            for j in range(len(boxes)):
+
+                if used[j]:
+                    continue
+
+                xx1, yy1, xx2, yy2 = boxes[j]
+
+                if (
+                    xx1 <= x2 + distance and
+                    xx2 >= x1 - distance and
+                    yy1 <= y2 + distance and
+                    yy2 >= y1 - distance
+                ):
+
+                    x1 = min(x1, xx1)
+                    y1 = min(y1, yy1)
+                    x2 = max(x2, xx2)
+                    y2 = max(y2, yy2)
+
+                    used[j] = True
+                    changed = True
+
+        merged.append((x1, y1, x2, y2))
+
+    return merged
+
+
+# =========================
+# PHÁT HIỆN + CHE QR
+# =========================
+
+def detect_and_redact_codes(img):
 
     qr_detector = cv2.QRCodeDetector()
 
-    scale = 3
+    qr_boxes = detect_qr_opencv(img, qr_detector)
 
-    big = cv2.resize(
-        gray,
-        None,
-        fx=scale,
-        fy=scale,
-        interpolation=cv2.INTER_CUBIC
+    # gộp box
+    qr_boxes = merge_nearby_boxes(
+        qr_boxes,
+        distance=5
     )
 
-    retval, points = qr_detector.detectMulti(big)
+    for x1, y1, x2, y2 in qr_boxes:
 
-    if retval:
+        # che gọn sát QR
+        padding = 1
 
-        for qr_points in points:
+        x1 = max(0, x1 - padding)
+        y1 = max(0, y1 - padding)
+        x2 = min(img.shape[1], x2 + padding)
+        y2 = min(img.shape[0], y2 + padding)
 
-            qr_points = qr_points / scale
+        pixelate_region(
+            img,
+            x1,
+            y1,
+            x2,
+            y2,
+            blocks=8
+        )
 
-            xs = [p[0] for p in qr_points]
-            ys = [p[1] for p in qr_points]
-
-            x1 = int(min(xs))
-            y1 = int(min(ys))
-            x2 = int(max(xs))
-            y2 = int(max(ys))
-
-            pixelate_region(
-                img,
-                x1,
-                y1,
-                x2,
-                y2,
-                blocks=8
-            )
+        print(f"[QR DETECTED] {x1}, {y1}, {x2}, {y2}")
 
 def redact_ratio_area(img, area, padding=0):
     img_h, img_w = img.shape[:2]
