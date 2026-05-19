@@ -2,12 +2,13 @@ import cv2
 import easyocr
 import re
 import unicodedata
+import numpy as np
 
 # =========================
 # CẤU HÌNH
 # =========================
 
-image_path = 'anh_test3.jpg'
+image_path = 'anh_test.jpg'
 output_path = 'redacted_output.jpg'
 
 reader = easyocr.Reader(['vi', 'en'], gpu=False)
@@ -22,6 +23,10 @@ FACE_AREA_RATIO = {
     "x2": 0.30,
     "y2": 0.82,
 }
+
+# Bật/tắt phát hiện mã vạch và dấu vân tay (THÊM MỚI)
+REDACT_BARCODE = True
+REDACT_FINGERPRINT = True
 
 # =========================
 # HÀM HỖ TRỢ
@@ -476,6 +481,110 @@ vietnam_address_words = [
 ]
 
 # =========================
+# THÊM MỚI: PHÁT HIỆN MÃ VẠCH (BARCODE)
+# =========================
+
+def detect_barcodes(img):
+    """Phát hiện mã vạch trong ảnh sử dụng OpenCV"""
+    barcode_boxes = []
+    img_h, img_w = img.shape[:2]
+    
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    grad_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = cv2.magnitude(grad_x, grad_y)
+    magnitude = cv2.convertScaleAbs(magnitude)
+    
+    blurred = cv2.GaussianBlur(magnitude, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 50, 255, cv2.THRESH_BINARY)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        
+        if area < 300 or area > 15000:
+            continue
+        
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Không che vùng quá lớn
+        if w > img_w * 0.3 or h > img_h * 0.3:
+            continue
+        
+        aspect_ratio = w / h if h > 0 else 0
+        
+        if (aspect_ratio > 2.5 or aspect_ratio < 0.4) and area < 12000:
+            padding = 5
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(img.shape[1], x + w + padding)
+            y2 = min(img.shape[0], y + h + padding)
+            barcode_boxes.append((x1, y1, x2, y2))
+            print(f"[BARCODE] area={area:.0f}, ratio={aspect_ratio:.2f}")
+    
+    barcode_boxes = merge_nearby_boxes(barcode_boxes, distance=10)
+    
+    if len(barcode_boxes) > 3:
+        barcode_boxes = barcode_boxes[:3]
+    
+    return barcode_boxes
+
+# =========================
+# THÊM MỚI: PHÁT HIỆN DẤU VÂN TAY (FINGERPRINT)
+# =========================
+
+def detect_fingerprints(img):
+    """Phát hiện dấu vân tay trong ảnh"""
+    fingerprint_boxes = []
+    img_h, img_w = img.shape[:2]
+    
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    sobelx = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+    gradient_magnitude = np.sqrt(sobelx**2 + sobely**2)
+    gradient_magnitude = cv2.convertScaleAbs(gradient_magnitude)
+    
+    _, thresh = cv2.threshold(gradient_magnitude, 30, 255, cv2.THRESH_BINARY)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        
+        if area < 300 or area > 6000:
+            continue
+        
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Không che vùng quá lớn
+        if w > img_w * 0.2 or h > img_h * 0.2:
+            continue
+        
+        roi = thresh[y:y+h, x:x+w]
+        density = np.sum(roi > 0) / (w * h) if w * h > 0 else 0
+        
+        if 0.2 < density < 0.7:
+            padding = 8
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(img.shape[1], x + w + padding)
+            y2 = min(img.shape[0], y + h + padding)
+            fingerprint_boxes.append((x1, y1, x2, y2))
+            print(f"[FINGERPRINT] area={area:.0f}, density={density:.2f}")
+    
+    fingerprint_boxes = merge_nearby_boxes(fingerprint_boxes, distance=20)
+    
+    if len(fingerprint_boxes) > 4:
+        fingerprint_boxes = fingerprint_boxes[:4]
+    
+    return fingerprint_boxes
+
+# =========================
 # ĐỌC ẢNH
 # =========================
 
@@ -512,6 +621,34 @@ for (x, y, w, h) in faces:
 # =========================
 
 detect_and_redact_codes(img)
+
+# =========================
+# THÊM MỚI: PHÁT HIỆN MÃ VẠCH
+# =========================
+
+if REDACT_BARCODE:
+    print("\n[BARCODE DETECTION] Đang phát hiện mã vạch...")
+    barcode_boxes = detect_barcodes(img)
+    if barcode_boxes:
+        for x1, y1, x2, y2 in barcode_boxes:
+            pixelate_region(img, x1, y1, x2, y2, blocks=12)
+            print(f"[BARCODE REDACTED] ({x1}, {y1}) -> ({x2}, {y2})")
+    else:
+        print("[BARCODE DETECTION] Không tìm thấy mã vạch")
+
+# =========================
+# THÊM MỚI: PHÁT HIỆN DẤU VÂN TAY
+# =========================
+
+if REDACT_FINGERPRINT:
+    print("\n[FINGERPRINT DETECTION] Đang phát hiện dấu vân tay...")
+    fingerprint_boxes = detect_fingerprints(img)
+    if fingerprint_boxes:
+        for x1, y1, x2, y2 in fingerprint_boxes:
+            pixelate_region(img, x1, y1, x2, y2, blocks=10)
+            print(f"[FINGERPRINT REDACTED] ({x1}, {y1}) -> ({x2}, {y2})")
+    else:
+        print("[FINGERPRINT DETECTION] Không tìm thấy dấu vân tay")
 
 # =========================
 # OCR
@@ -707,6 +844,60 @@ for x1, y1, x2, y2 in expanded_boxes:
 # =========================
 # LƯU ẢNH
 # =========================
+
+# =========================
+# CHE DẤU VÂN TAY THEO VÙNG CỐ ĐỊNH (ĐÃ TỐI ƯU CHO MẶT SAU CCCD)
+# =========================
+
+if REDACT_FINGERPRINT:
+    print("\n[FINGERPRINT FIXED] Đang làm mờ cả 2 dấu vân tay trên CCCD...")
+    
+    img_h, img_w = img.shape[:2]
+    
+    # Tọa độ được căn chỉnh để che toàn bộ góc trên bên phải (bao gồm cả 2 ô vân tay)
+    fingerprint_region = {
+        "x1": 0.49,   # Bắt đầu từ giữa thẻ dịch sang phải để che trọn ô vân tay trái
+        "y1": 0.12,   # Đẩy sát lên cạnh trên cùng của ô vân tay
+        "x2": 0.82,   # Kéo dài sang phải vừa đủ bao hết ô vân tay phải
+        "y2": 0.46,   # Kéo xuống dưới để phủ hết chiều dọc của cả 2 ô
+    }
+    
+    # Tính toán tọa độ pixel thực tế trên ảnh
+    x1 = int(img_w * fingerprint_region["x1"])
+    y1 = int(img_h * fingerprint_region["y1"])
+    x2 = int(img_w * fingerprint_region["x2"])
+    y2 = int(img_h * fingerprint_region["y2"])
+    
+    # Tiến hành làm mờ (pixelate) với độ mờ mạnh (blocks=6 để xóa hoàn toàn cấu trúc vân)
+    pixelate_region(img, x1, y1, x2, y2, blocks=6)
+    print(f"[FINGERPRINT FIXED] Đã che hoàn toàn vân tay tại vùng ({x1}, {y1}) -> ({x2}, {y2})")
+
+# =========================
+# CHE MÃ VẠCH THEO VÙNG CỐ ĐỊNH (ĐÃ TỐI ƯU CHO THẺ SGU)
+# =========================
+
+if REDACT_BARCODE:
+    print("\n[BARCODE FIXED] Đang làm mờ toàn bộ mã vạch...")
+    
+    img_h, img_w = img.shape[:2]
+    
+    # Tọa độ đã được mở rộng để ôm trọn mã vạch từ trái sang phải ở góc dưới thẻ
+    barcode_region = {
+        "x1": 0.33,   # Bắt đầu dịch sang trái một chút để sát mép đầu mã vạch
+        "y1": 0.81,   # Đẩy dịch lên trên để không bị sót phần đỉnh các vạch đen
+        "x2": 0.89,   # Kéo dài sang phải để che hết cả phần mờ pixel cũ
+        "y2": 0.94,   # Kéo xuống sát đáy mã vạch
+    }
+    
+    # Tính toán tọa độ pixel thực tế trên ảnh
+    x1 = int(img_w * barcode_region["x1"])
+    y1 = int(img_h * barcode_region["y1"])
+    x2 = int(img_w * barcode_region["x2"])
+    y2 = int(img_h * barcode_region["y2"])
+    
+    # Tiến hành làm mờ (pixelate) với độ mờ mạnh (blocks=6 để nhòe hẳn)
+    pixelate_region(img, x1, y1, x2, y2, blocks=12)
+    print(f"[BARCODE FIXED] Đã che hoàn toàn mã vạch tại vùng ({x1}, {y1}) -> ({x2}, {y2})")
 
 cv2.imwrite(output_path, img)
 
