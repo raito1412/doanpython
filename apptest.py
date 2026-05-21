@@ -34,7 +34,7 @@ class SensitiveImageMaskingApp:
 
     def load_ocr_reader(self):
         try:
-            self.reader = easyocr.Reader(['vi', 'en'], gpu=False)
+            self.reader = easyocr.Reader(['vi', 'en'], gpu=True)
             self.root.after(0, lambda: self.loading_label.config(text="OCR đã sẵn sàng."))
         except Exception as e:
             self.root.after(

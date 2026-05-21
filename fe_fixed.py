@@ -112,6 +112,71 @@ def safe_add_column(cursor, table_name, column_name, column_type):
 
 # ================= APPLICATION CLASS =================
 class SocialChatApp:
+    def safe_open_chat(self, partner_phone, partner_name):
+        """Hàm an toàn để mở chat"""
+        if not hasattr(self, 'chat_panel') or self.chat_panel is None:
+            messagebox.showwarning("Chưa sẵn sàng", "Vui lòng chờ giao diện load xong!")
+            return
+        
+        try:
+            # Xóa nội dung cũ
+            for child in self.chat_panel.winfo_children():
+                child.destroy()
+
+            # Tạo chat component
+            ChatWindowComponent(
+                parent=self.chat_panel,
+                my_phone=self.current_user_phone,
+                partner_phone=partner_phone,
+                partner_name=partner_name,
+                image_store=self.chat_images,
+                avatar_refs=self.avatar_refs,
+                embedded=True,
+            )
+        except Exception as e:
+            messagebox.showerror("Lỗi chat", f"Không thể mở cuộc trò chuyện:\n{str(e)}")
+    def edit_post(self, post_id, old_content):
+        new_content = simpledialog.askstring(
+            "Sửa bài viết",
+            "Nhập nội dung mới:",
+            initialvalue=old_content,
+            parent=self.root,
+        )
+        if new_content is None:
+            return
+        new_content = new_content.strip()
+        if not new_content:
+            messagebox.showwarning("Thiếu nội dung", "Nội dung bài viết không được để trống!")
+            return
+
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE posts SET content = ?, timestamp = ? WHERE id = ?",
+            (new_content, datetime.now().strftime("%Y-%m-%d %H:%M"), post_id),
+        )
+        conn.commit()
+        conn.close()
+        self.load_feed_from_db()
+
+    def delete_post(self, post_id):
+        confirm = messagebox.askyesno(
+            "Xóa bài viết",
+            "Bạn có chắc chắn muốn xóa bài viết này?\nCác bình luận liên quan cũng sẽ bị xóa.",
+        )
+        if not confirm:
+            return
+
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        # Xóa comment trước
+        cursor.execute("DELETE FROM comments WHERE post_id = ?", (post_id,))
+        # Xóa bài viết
+        cursor.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+        conn.commit()
+        conn.close()
+        self.load_feed_from_db()
+
     def __init__(self, root):
         self.root = root
         self.root.title("Social Network Demo")
@@ -126,7 +191,7 @@ class SocialChatApp:
         self.feed_images = {}
         self.chat_images = []
         self.avatar_refs = {}
-
+        self.current_chat_component = None
         self.show_login_screen()
 
     def clear_root(self):
@@ -406,85 +471,52 @@ class SocialChatApp:
         self.post_preview_photo = None
         self.post_mask_var = tk.BooleanVar(value=False)
 
+        # === 1. HEADER (Phần trên cùng) ===
         header = tk.Frame(self.root, bg="#D8E2DC", height=60, bd=1, relief="groove")
         header.pack(fill="x")
         header.pack_propagate(False)
 
         self.render_avatar(header, self.current_user_name, self.current_user_avatar, "me", bg="#D8E2DC")
+        tk.Label(header, text=f" Mạng Xã Hội | {self.current_user_name}", bg="#D8E2DC", fg="#2C3E50", font=("Arial", 13, "bold")).pack(side="left", padx=5, pady=15)
+        tk.Button(header, text="Đăng xuất", command=self.handle_logout_clear, bg="#FFADAD", fg="#780000", font=("Arial", 9, "bold"), bd=0, padx=12, pady=6, cursor="hand2").pack(side="right", padx=20, pady=12)
 
-        tk.Label(
-            header,
-            text=f" Mạng Xã Hội | {self.current_user_name}",
-            bg="#D8E2DC",
-            fg="#2C3E50",
-            font=("Arial", 13, "bold"),
-        ).pack(side="left", padx=5, pady=15)
-
-        tk.Button(
-            header,
-            text="Đăng xuất",
-            command=self.handle_logout_clear,
-            bg="#FFADAD",
-            fg="#780000",
-            font=("Arial", 9, "bold"),
-            bd=0,
-            padx=12,
-            pady=6,
-            cursor="hand2",
-        ).pack(side="right", padx=20, pady=12)
-
-        tk.Button(
-            header,
-            text="Nhắn tin trò chuyện",
-            command=self.show_select_chat_partner,
-            bg="#A8DADC",
-            fg="#1D3557",
-            font=("Arial", 10, "bold"),
-            bd=0,
-            padx=14,
-            pady=6,
-            cursor="hand2",
-        ).pack(side="right", padx=5, pady=12)
-
+        # === KHU VỰC NỘI DUNG CHÍNH (Chia 3 cột) ===
         main_content = tk.Frame(self.root, bg="#E8F1F5")
         main_content.pack(fill="both", expand=True)
 
+        # CỘT 1: SIDEBAR (Vẽ khung trái trước)
         sidebar = tk.Frame(main_content, bg="#F4F1DE", width=240, bd=1, relief="groove")
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
-        search_box = tk.LabelFrame(
-            sidebar,
-            text=" Tìm bạn bằng SĐT",
-            bg="#F4F1DE",
-            fg="#2C3E50",
-            font=("Arial", 10, "bold"),
-            padx=10,
-            pady=10,
-        )
+        search_box = tk.LabelFrame(sidebar, text=" Tìm bạn bằng SĐT", bg="#F4F1DE", fg="#2C3E50", font=("Arial", 10, "bold"), padx=10, pady=10)
         search_box.pack(fill="x", padx=12, pady=15)
-
         self.ent_search_phone = tk.Entry(search_box, font=("Arial", 10), bg="#FFFFFF", fg="#2C3E50")
         self.ent_search_phone.pack(fill="x", ipady=4, pady=(0, 8))
         self.ent_search_phone.bind("<Return>", lambda event: self.handle_add_friend())
-
-        tk.Button(
-            search_box,
-            text="Tìm & Kết bạn",
-            command=self.handle_add_friend,
-            bg="#E9C46A",
-            fg="#1D3557",
-            font=("Arial", 9, "bold"),
-            bd=0,
-            pady=5,
-            cursor="hand2",
-        ).pack(fill="x")
+        tk.Button(search_box, text="Tìm & Kết bạn", command=self.handle_add_friend, bg="#E9C46A", fg="#1D3557", font=("Arial", 9, "bold"), bd=0, pady=5, cursor="hand2").pack(fill="x")
 
         tk.Label(sidebar, text=" Bạn bè của bạn:", bg="#F4F1DE", fg="#566573", font=("Arial", 10, "bold")).pack(anchor="w", padx=15, pady=(10, 2))
         self.friend_list_frame = tk.Frame(sidebar, bg="#F4F1DE")
         self.friend_list_frame.pack(fill="both", expand=True, padx=15)
         self.update_sidebar_friends()
 
+        # CỘT 2: CHAT PANEL (Vẽ khung phải ngay sau đó để giữ chỗ)
+        self.chat_panel = tk.Frame(main_content, bg="#E8F1F5", width=350, bd=1, relief="groove")
+        self.chat_panel.pack(side="right", fill="both", padx=(0, 10), pady=15)
+        self.chat_panel.pack_propagate(False)
+
+        self.chat_placeholder_label = tk.Label(
+            self.chat_panel,
+            text="Chọn một bạn trong danh sách\nbên trái để bắt đầu trò chuyện",
+            bg="#E8F1F5",
+            fg="#6B7280",
+            font=("Arial", 10, "italic"),
+            justify="center",
+        )
+        self.chat_placeholder_label.pack(expand=True)
+
+        # CỘT 3: FEED BẢNG TIN (Vẽ ở giữa cuối cùng để nó chiếm trọn không gian thừa)
         feed_container = tk.Frame(main_content, bg="#E8F1F5")
         feed_container.pack(side="left", fill="both", expand=True, padx=15, pady=15)
 
@@ -502,6 +534,7 @@ class SocialChatApp:
 
         self.create_post_box()
         self.load_feed_from_db()
+
 
     def render_avatar(self, parent, name, avatar_path, key, bg="#FFFFFF"):
         if avatar_path and os.path.exists(avatar_path):
@@ -598,15 +631,13 @@ class SocialChatApp:
                 bg="#F4F1DE",
                 fg="#9CA3AF",
                 font=("Arial", 9, "italic"),
-                justify="left",
             ).pack(anchor="w", pady=5)
             return
 
         for name, phone in friend_rows:
-            tk.Button(
+            btn = tk.Button(
                 self.friend_list_frame,
                 text=f"• {name}",
-                command=lambda p=phone, n=name: self.open_chat_window(p, n),
                 bg="#F4F1DE",
                 fg="#2C3E50",
                 activebackground="#E8F1F5",
@@ -614,7 +645,12 @@ class SocialChatApp:
                 anchor="w",
                 bd=0,
                 cursor="hand2",
-            ).pack(fill="x", pady=2)
+                width=20,
+            )
+            # Dùng lambda an toàn
+            btn.configure(command=lambda p=phone, n=name: self.safe_open_chat(p, n))
+            btn.pack(fill="x", pady=2)
+
 
     def create_post_box(self):
         box = tk.Frame(self.feed_frame, bg="#F0F7F4", padx=16, pady=14, bd=1, relief="solid")
@@ -748,21 +784,34 @@ class SocialChatApp:
 
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+
+        # CHỈ lấy bài:
+        # - của chính mình
+        # - của những người là bạn bè với mình
         cursor.execute(
             """
-            SELECT posts.id, posts.author_phone, posts.author_name, posts.content,
-                   posts.image_path, posts.mask_enabled, posts.likes, posts.timestamp,
-                   users.avatar_path
-            FROM posts
-            LEFT JOIN users ON posts.author_phone = users.phone
-            ORDER BY posts.id DESC
-            """
+            SELECT p.id, p.author_phone, p.author_name, p.content,
+                   p.image_path, p.mask_enabled, p.likes, p.timestamp,
+                   u.avatar_path
+            FROM posts AS p
+            LEFT JOIN users AS u ON p.author_phone = u.phone
+            WHERE 
+                p.author_phone = ?
+                OR p.author_phone IN (
+                    SELECT friend_phone 
+                    FROM friends 
+                    WHERE user_phone = ?
+                )
+            ORDER BY p.id DESC
+            """,
+            (self.current_user_phone, self.current_user_phone),
         )
         posts = cursor.fetchall()
         conn.close()
 
         for post in posts:
             self.render_post_item(*post)
+
 
     def render_post_item(self, post_id, author_phone, author, content, img_path, mask_enabled, likes, time_str, author_avatar):
         p_frame = tk.Frame(self.feed_frame, bg="#FFFFFF", padx=14, pady=12, bd=1, relief="solid")
@@ -848,6 +897,35 @@ class SocialChatApp:
             cursor="hand2",
         ).pack(side="left", padx=2)
 
+        # Nếu là bài của chính mình thì cho phép Sửa / Xóa
+        if author_phone == self.current_user_phone:
+            tk.Button(
+                act_frame,
+                text="Sửa",
+                command=lambda pid=post_id, c=content: self.edit_post(pid, c or ""),
+                bg="#D1FAE5",
+                fg="#065F46",
+                font=("Arial", 9, "bold"),
+                bd=0,
+                padx=10,
+                pady=5,
+                cursor="hand2",
+            ).pack(side="right", padx=2)
+
+            tk.Button(
+                act_frame,
+                text="Xóa",
+                command=lambda pid=post_id: self.delete_post(pid),
+                bg="#FECACA",
+                fg="#7F1D1D",
+                font=("Arial", 9, "bold"),
+                bd=0,
+                padx=10,
+                pady=5,
+                cursor="hand2",
+            ).pack(side="right", padx=2)
+
+
     def render_comments(self, parent, post_id):
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -909,91 +987,20 @@ class SocialChatApp:
         conn.close()
         self.load_feed_from_db()
 
-    # ================= 3. CHAT PARTNER =================
-    def show_select_chat_partner(self):
-        select_win = tk.Toplevel(self.root)
-        select_win.title("Chọn người muốn nhắn tin")
-        select_win.geometry("350x400")
-        select_win.configure(bg="#F4F1DE")
-        select_win.transient(self.root)
-        select_win.grab_set()
-
-        tk.Label(
-            select_win,
-            text="Danh sách bạn bè",
-            bg="#F4F1DE",
-            fg="#2C3E50",
-            font=("Arial", 12, "bold"),
-        ).pack(pady=15)
-
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT users.name, users.phone
-            FROM friends
-            JOIN users ON friends.friend_phone = users.phone
-            WHERE friends.user_phone = ?
-            ORDER BY users.name
-            """,
-            (self.current_user_phone,),
-        )
-        friends = cursor.fetchall()
-        conn.close()
-
-        if not friends:
-            tk.Label(
-                select_win,
-                text="Bạn chưa có bạn bè nào.\nHãy kết bạn trước bằng ô tìm kiếm!",
-                bg="#F4F1DE",
-                fg="#6B7280",
-                font=("Arial", 10),
-                justify="center",
-            ).pack(pady=40)
-            return
-
-        list_f = tk.Frame(select_win, bg="#F4F1DE")
-        list_f.pack(fill="both", expand=True, padx=20)
-
-        for name, phone in friends:
-            tk.Button(
-                list_f,
-                text=f"{name} ({phone})",
-                command=lambda p=phone, n=name: self.open_chat_from_select(select_win, p, n),
-                bg="#E8F1F5",
-                fg="#2C3E50",
-                font=("Arial", 10),
-                bd=0,
-                anchor="w",
-                padx=15,
-                pady=8,
-                cursor="hand2",
-            ).pack(fill="x", pady=4)
-
-    def open_chat_from_select(self, select_win, partner_phone, partner_name):
-        select_win.destroy()
-        self.open_chat_window(partner_phone, partner_name)
-
-    def open_chat_window(self, partner_phone, partner_name):
-        chat_win = tk.Toplevel(self.root)
-        chat_win.title(f"Nhắn tin với {partner_name}")
-        chat_win.geometry("450x600")
-        chat_win.minsize(380, 500)
-        chat_win.configure(bg="#E8F1F5")
-        ChatWindowComponent(
-            chat_win,
-            self.current_user_phone,
-            partner_phone,
-            partner_name,
-            self.chat_images,
-            self.avatar_refs,
-        )
-
+    
 
 # ================= 4. WINDOW: CHAT SYSTEM =================
 class ChatWindowComponent:
-    def __init__(self, window, my_phone, partner_phone, partner_name, image_store, avatar_refs):
-        self.window = window
+    def __init__(self, parent, my_phone, partner_phone, partner_name, image_store, avatar_refs, embedded=False):
+        print(f"[DEBUG] Mở chat với {partner_name} ({partner_phone}) - Embedded: {embedded}")
+        
+        # ĐÃ XÓA 3 DÒNG LỆNH BỊ TRÙNG LẶP Ở KHU VỰC NÀY
+        
+        """
+        parent: nếu embedded=True thì là Frame; nếu embedded=False thì là Toplevel
+        """
+        self.embedded = embedded
+        self.parent = parent
         self.my_phone = my_phone
         self.partner_phone = partner_phone
         self.partner_name = partner_name
@@ -1005,13 +1012,31 @@ class ChatWindowComponent:
         self.mask_var = tk.BooleanVar(value=False)
         self.last_msg_count = -1
 
+        if self.embedded:
+            # Dùng parent làm gốc
+            self.window = parent
+        else:
+            # Nếu muốn vẫn dùng kiểu cửa sổ riêng
+            self.window = tk.Toplevel(parent)
+            self.window.title(f"Nhắn tin với {partner_name}")
+            self.window.geometry("450x600")
+            self.window.minsize(380, 500)
+            self.window.configure(bg="#E8F1F5")
+
+        # BA DÒNG NÀY PHẢI ĐẶT Ở CUỐI CÙNG (Sau khi self.window đã có)
         self.build_ui()
         self.load_chat_history(force=True)
         self.start_auto_refresh()
 
+
     def build_ui(self):
+        # Xóa hết để tránh xung đột
+        for widget in self.window.winfo_children():
+            widget.destroy()
+
+        # ================= 1. HEADER (Vẽ đầu tiên trên cùng) =================
         header = tk.Frame(self.window, bg="#D8E2DC", height=50, bd=1, relief="groove")
-        header.pack(fill="x", side="top")
+        header.pack(fill="x", side="top", padx=0, pady=0)
         header.pack_propagate(False)
 
         self.render_partner_avatar(header)
@@ -1021,90 +1046,84 @@ class ChatWindowComponent:
             bg="#D8E2DC",
             fg="#2C3E50",
             font=("Arial", 11, "bold"),
-        ).pack(side="left", padx=8, pady=12)
+        ).pack(side="left", padx=10, pady=12)
 
-        # Bottom phải pack trước để ô nhập và nút gửi không bị canvas che mất.
+        # ================= 2. INPUT AREA (Vẽ thứ hai, ép nó nằm dưới đáy) =================
         bottom = tk.Frame(self.window, bg="#D8E2DC", pady=8, padx=10)
         bottom.pack(fill="x", side="bottom")
 
+        # Preview image
         self.preview_frame = tk.Frame(bottom, bg="#FFFFFF")
         self.preview_frame.pack_forget()
 
         self.preview_label = tk.Label(self.preview_frame, bg="#FFFFFF")
         self.preview_label.pack(side="left", padx=5, pady=5)
-
         self.preview_file_label = tk.Label(self.preview_frame, text="", bg="#FFFFFF", fg="#2C3E50", font=("Arial", 9))
         self.preview_file_label.pack(side="left")
 
         tk.Checkbutton(
-            self.preview_frame,
-            text="Ẩn ảnh",
-            variable=self.mask_var,
-            bg="#FFFFFF",
-            font=("Arial", 9),
+            self.preview_frame, text="Ẩn ảnh", variable=self.mask_var,
+            bg="#FFFFFF", font=("Arial", 9)
         ).pack(side="left", padx=5)
 
         tk.Button(
-            self.preview_frame,
-            text="✕",
-            command=self.remove_image,
-            bg="#FFADAD",
-            fg="#780000",
-            bd=0,
-            cursor="hand2",
+            self.preview_frame, text="✕", command=self.remove_image,
+            bg="#FFADAD", fg="#780000", bd=0, cursor="hand2"
         ).pack(side="right", padx=5)
 
+        # Input row
         input_row = tk.Frame(bottom, bg="#D8E2DC")
-        input_row.pack(fill="x")
+        input_row.pack(fill="x", pady=(5, 0))
 
         tk.Button(
-            input_row,
-            text="Ảnh",
-            command=self.choose_image,
-            bg="#E8F1F5",
-            fg="#2C3E50",
-            font=("Arial", 10),
-            bd=1,
-            relief="groove",
-            padx=10,
-            pady=5,
-            cursor="hand2",
+            input_row, text="Ảnh", command=self.choose_image,
+            bg="#E8F1F5", fg="#2C3E50", font=("Arial", 10), bd=1, relief="groove", padx=10, pady=5
         ).pack(side="left", padx=(0, 5))
 
-        # Ô nhắn tin đã thêm lại.
         self.entry = tk.Entry(
-            input_row,
-            bg="#FFFFFF",
-            fg="#2C3E50",
-            font=("Arial", 12),
-            bd=1,
-            relief="solid",
+            input_row, bg="#FFFFFF", fg="#2C3E50", font=("Arial", 12), bd=1, relief="solid"
         )
-        self.entry.pack(side="left", fill="x", expand=True, padx=2, ipady=8)
+        self.entry.pack(side="left", fill="x", expand=True, padx=5, ipady=8)
         self.entry.bind("<Return>", self.send_message_event)
         self.entry.focus_set()
 
-        # Nút gửi đã thêm lại và luôn nằm bên phải.
         tk.Button(
-            input_row,
-            text="Gửi",
-            command=self.send_message,
-            bg="#A8DADC",
-            fg="#1D3557",
-            font=("Arial", 10, "bold"),
-            bd=0,
-            padx=15,
-            pady=6,
-            cursor="hand2",
-        ).pack(side="right", padx=(5, 0))
+            input_row, text="Gửi", command=self.send_message,
+            bg="#A8DADC", fg="#1D3557", font=("Arial", 10, "bold"), bd=0, padx=15, pady=6, cursor="hand2"
+        ).pack(side="right")
 
-        self.canvas = tk.Canvas(self.window, bg="#E8F1F5", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True, side="top")
+        # ================= 3. CHAT AREA (Vẽ cuối cùng để nó tự lấp đầy khoảng trống) =================
+        chat_container = tk.Frame(self.window, bg="#E8F1F5")
+        chat_container.pack(fill="both", expand=True, side="top", padx=5, pady=5)
+
+        self.canvas = tk.Canvas(chat_container, bg="#E8F1F5", highlightthickness=0)
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(chat_container, orient="vertical", command=self.canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+
+        self.canvas.configure(yscrollcommand=scrollbar.set)
 
         self.chat_frame = tk.Frame(self.canvas, bg="#E8F1F5")
         self.chat_window_obj = self.canvas.create_window((0, 0), window=self.chat_frame, anchor="nw")
-        self.chat_frame.bind("<Configure>", lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfig(self.chat_window_obj, width=event.width))
+
+        self.chat_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(self.chat_window_obj, width=e.width))
+
+        # --- Bổ sung tính năng lăn chuột (MouseWheel) ---
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bound_to_mousewheel(event):
+            self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        def _unbound_to_mousewheel(event):
+            self.canvas.unbind_all("<MouseWheel>")
+
+        # Chỉ kích hoạt cuộn chuột khi rê chuột vào khu vực chat
+        chat_container.bind("<Enter>", _bound_to_mousewheel)
+        chat_container.bind("<Leave>", _unbound_to_mousewheel)
+
 
     def render_partner_avatar(self, parent):
         conn = sqlite3.connect(DB_NAME)
