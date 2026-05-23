@@ -7,7 +7,7 @@ import unicodedata
 # CẤU HÌNH
 # =========================
 
-image_path = 'anh_test3.jpg'
+image_path = 'anh_test.jpg'
 output_path = 'redacted_output.jpg'
 
 reader = easyocr.Reader(['vi', 'en'], gpu=False)

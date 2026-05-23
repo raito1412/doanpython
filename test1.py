@@ -43,6 +43,18 @@ def normalize_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+def keyword_in_text(text, keywords):
+    for keyword in keywords:
+        if re.search(r'\b' + re.escape(keyword) + r'\b', text, flags=re.IGNORECASE):
+            return True
+    return False
+
+def keyword_in_text(text, keywords):
+    for keyword in keywords:
+        if re.search(r'\b' + re.escape(keyword) + r'\b', text, flags=re.IGNORECASE):
+            return True
+    return False
+
 def get_rect_from_bbox(bbox):
     xs = [point[0] for point in bbox]
     ys = [point[1] for point in bbox]
@@ -282,8 +294,8 @@ def detect_and_redact_codes(img):
             blocks=8
         )
 
-        print(f"[QR DETECTED] {x1}, {y1}, {x2}, {y2}")
-
+        print(f"[QR DETECTED & REDACTED] {x1}, {y1}, {x2}, {y2}")
+        
 def redact_ratio_area(img, area, padding=0):
     img_h, img_w = img.shape[:2]
 
@@ -343,7 +355,6 @@ def line_has_sensitive_pattern(text):
 
 sensitive_keywords = [
     # Định danh cá nhân
-    'so',
     'so the',
     'so cccd',
     'cccd',
@@ -375,6 +386,7 @@ sensitive_keywords = [
     'date of issue',
     'ngay het han',
     'co gia tri den',
+    'Date of expiry',
     'expiry',
     'valid until',
 
@@ -445,6 +457,7 @@ next_line_keywords = [
     'ngay het han',
     'expiry',
     'co gia tri den',
+    'Date of expiry',
     'quoc tich',
     'nationality',
     'gioi tinh',
@@ -697,7 +710,7 @@ for item in ocr_items:
     for line in lines:
         # Ngưỡng gom dòng linh hoạt theo chiều cao chữ
         avg_height = max(12, item['height'])
-        if abs(item['center_y'] - line['center_y']) < max(18, avg_height * 0.7):
+        if abs(item['center_y'] - line['center_y']) < max(6, avg_height * 0.45):
             line['items'].append(item)
 
             centers = [i['center_y'] for i in line['items']]
@@ -744,87 +757,142 @@ for line in line_items:
     print(line['text'])
 
 # =========================
-# XÁC ĐỊNH VÙNG CẦN CHE
+# XÁC ĐỊNH & CHE THÔNG TIN NHẠY CẢM 
 # =========================
 
 redact_boxes = []
+pending_label = None
 
-for index, line in enumerate(line_items):
-    is_sensitive = False
+for line in line_items:
+    original_text = line['text']
+    norm_text = line['norm_text']
+    x1, y1, x2, y2 = line['x1'], line['y1'], line['x2'], line['y2']
+    if pending_label:
+        redact_boxes.append((x1, y1, x2, y2))
+        print(f"[REDACT NEXT LINE] {original_text}")
 
-    norm = line['norm_text']
-    text = line['text']
+        pending_label = None
+        continue
+    # Bỏ qua tiêu đề lớn của giấy tờ
+    TITLE_WORDS = [
+    'can cuoc',
+    'can cuoc cong dan',
+    'citizen identity',
+    'citizen identity card',
+    'cong hoa xa hoi chu nghia viet nam',
+    'doc lap tu do hanh phuc',
+    'the sinh vien',
+    'student card',
+    'ho chieu'
+    ]
 
-    # 1. Regex số giấy tờ, ngày sinh, điện thoại, email...
-    if line_has_sensitive_pattern(text):
-        is_sensitive = True
+    is_title = any(phrase in norm_text for phrase in TITLE_WORDS)
+    has_label_separator = ':' in original_text or '：' in original_text
 
-    # 2. Keyword nhạy cảm
-    if any(keyword in norm for keyword in sensitive_keywords):
-        is_sensitive = True
+    if is_title and not has_label_separator:
+        continue
+    # === Tách Label và Value ===
+    label = original_text
+    value = ""
+    value_x1 = x1
 
-    # 3. Dòng giống địa chỉ Việt Nam
-    if any(word in norm for word in vietnam_address_words) and len(norm) >= 8:
-        is_sensitive = True
+    if ':' in original_text:
+        parts = [p.strip() for p in original_text.split(':', 1)]
+        label = parts[0] + ":"
+        value = parts[1] if len(parts) > 1 else ""
+        label_char_ratio = len(label) / max(len(original_text), 1)
+        label_width = int((x2 - x1) * max(0.40, min(label_char_ratio, 0.65)))
+        value_x1 = x1 + label_width
 
-    # 4. Nếu phát hiện keyword nhiều dòng, che dòng đó + 4 dòng dưới
-    if any(keyword in norm for keyword in multi_line_keywords):
-        for j in range(index, min(index + 5, len(line_items))):
-            redact_boxes.append((
-                line_items[j]['x1'],
-                line_items[j]['y1'],
-                line_items[j]['x2'],
-                line_items[j]['y2']
-            ))
+    elif '：' in original_text:
+        parts = [p.strip() for p in original_text.split('：', 1)]
+        label = parts[0] + "："
+        value = parts[1] if len(parts) > 1 else ""
+        value_x1 = x1 + int((x2 - x1) * 0.45)
 
-    # 5. Nếu phát hiện keyword có giá trị ngay sau, che dòng đó + 1 dòng dưới
-    if any(keyword in norm for keyword in next_line_keywords):
-        for j in range(index, min(index + 2, len(line_items))):
-            redact_boxes.append((
-                line_items[j]['x1'],
-                line_items[j]['y1'],
-                line_items[j]['x2'],
-                line_items[j]['y2']
-            ))
+    else:
+        # Không có dấu :, thử tách theo từ khóa
+        for kw in next_line_keywords + ['so cccd', 'cccd', 'cmnd', 'ho ten', 'ho va ten']:
+            if kw in norm_text:
+                match = re.search(re.escape(kw.replace(' ', '.*?')), original_text, re.IGNORECASE)
+                if match:
+                    value_start_pos = match.end()
+                    label = original_text[:value_start_pos].strip()
+                    value = original_text[value_start_pos:].strip()
+                    value_x1 = x1 + int((len(label) / len(original_text)) * (x2 - x1)) + 8
+                    break
 
-    if is_sensitive:
+    # === QUYẾT ĐỊNH CHE ===
+    should_redact = False
+
+    if value:
+        digits = re.sub(r'\D', '', value)
+        norm_value = normalize_text(value)
+
+        if ("ho va ten" in norm_text or "ho ten" in norm_text ) or \
+           (len(digits) >= 8) or \
+           line_has_sensitive_pattern(value) or \
+           any(word in norm_value for word in vietnam_address_words):                                     
+            should_redact = True
+
+    # Nếu là dòng "Họ và tên" thì che luôn cả value
+    if any(k in norm_text for k in ['ho va ten', 'ho ten', 'full name', 'name']):
+        pending_label = True
+        value_x1 = x1 + int((x2 - x1) * 0.65)   # che từ giữa dòng trở đi
+    # Nếu là dòng "Giới tính" 
+    if any(k in norm_text for k in ['gioi tinh', 'sex', 'gender']):
+        should_redact = True
+        value_x1 = x1 + int((x2 - x1) * 0.40)
+
+    if any(k in norm_text for k in ['que quan', 'place of origin', 'noi sinh', 'place of birth']):
+        pending_label = True
+        value_x1 = x1 + int((x2 - x1) * 0.65)
+
+    if any(k in norm_text for k in ['quoc tich', 'nationality']):
+        should_redact = True
+        value_x1 = x1 + int((x2 - x1) * 0.75)
+
+    if any(k in norm_text for k in ['noi thuong tru', 'thuong tru', 'place of residence', 'residence', 'dia chi', 'address']):
+        pending_label = True
+        value_x1 = x1 + int((x2 - x1) * 0.70)
+
+    if any(k in norm_text for k in ['dan toc', 'ton giao', 'religion']):
+        should_redact = True
+        value_x1 = x1 + int((x2 - x1) * 0.45)
+
+    if any(k in norm_text for k in ['ngay sinh', 'date of birth', 'sinh ngay']):
+        should_redact = True
+        value_x1 = x1 + int((x2 - x1) * 0.65)
+
+    if any(k in norm_text for k in ['co gia tri den', 'ngay het han', 'expiry', 'date of expiry', 'valid until']):
+        pending_label = True
+        value_x1 = x1 + int((x2 - x1) * 0.90)
+
+    if should_redact and value_x1 < x2 - 10:
+        value_width = int((x2 - value_x1) * 0.9)  
         redact_boxes.append((
-            line['x1'],
-            line['y1'],
-            line['x2'],
-            line['y2']
+            value_x1,
+            y1 - 4,
+            value_x1 + value_width,
+            y2 + 4
         ))
+        print(f"[REDACT] \"{label}\" → \"{value}\"")
+    elif line_has_sensitive_pattern(original_text) and len(value) < 5:
+        split_x = x1 + int((x2 - x1) * 0.2)  # giữ ~40% đầu làm label
+        redact_boxes.append((split_x, y1 - 10, x2 + 6, y2 + 8))
+        print(f"[REDACT VALUE ONLY] {original_text}")
 
-# =========================
-# CHE THEO VÙNG OCR GỐC NẾU TỪ KHÓA BỊ TÁCH RIÊNG
-# =========================
-
-for item in ocr_items:
-    norm = item['norm_text']
-
-    if any(keyword in norm for keyword in sensitive_keywords):
-        redact_boxes.append((
-            item['x1'],
-            item['y1'],
-            item['x2'],
-            item['y2']
-        ))
-
-# =========================
-# GỘP VÙNG GẦN NHAU ĐỂ CHE KĨ HƠN
-# =========================
-
-# Mở rộng từng box để tránh sót chữ ở mép
+# MỞ RỘNG VÙNG CHE 
 expanded_boxes = []
 
 img_h, img_w = img.shape[:2]
 
 for x1, y1, x2, y2 in redact_boxes:
     expanded_boxes.append((
-        max(0, x1 - 15),
+        max(0, x1 - 8),
         max(0, y1 - 10),
-        min(img_w, x2 + 15),
-        min(img_h, y2 + 10),
+        min(img_w, x2 + 8),
+        min(img_h, y2 + 8),
     ))
 
 # =========================
@@ -838,7 +906,7 @@ if REDACT_FACE_AREA:
 # VẼ CHE
 # =========================
 
-for x1, y1, x2, y2 in expanded_boxes:
+for x1, y1, x2, y2 in expanded_boxes: 
     redact_rect(img, x1, y1, x2, y2, padding=0)
 
 # =========================
@@ -898,6 +966,20 @@ if REDACT_BARCODE:
     # Tiến hành làm mờ (pixelate) với độ mờ mạnh (blocks=6 để nhòe hẳn)
     pixelate_region(img, x1, y1, x2, y2, blocks=12)
     print(f"[BARCODE FIXED] Đã che hoàn toàn mã vạch tại vùng ({x1}, {y1}) -> ({x2}, {y2})")
+
+cv2.imwrite(output_path, img)
+
+print("\nĐã lưu ảnh che thông tin tại:")
+print(output_path)
+    # Tính toán tọa độ pixel thực tế trên ảnh
+x1 = int(img_w * barcode_region["x1"])
+y1 = int(img_h * barcode_region["y1"])
+x2 = int(img_w * barcode_region["x2"])
+y2 = int(img_h * barcode_region["y2"])
+    
+    # Tiến hành làm mờ (pixelate) với độ mờ mạnh (blocks=6 để nhòe hẳn)
+pixelate_region(img, x1, y1, x2, y2, blocks=12)
+print(f"[BARCODE FIXED] Đã che hoàn toàn mã vạch tại vùng ({x1}, {y1}) -> ({x2}, {y2})")
 
 cv2.imwrite(output_path, img)
 
