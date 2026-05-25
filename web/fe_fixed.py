@@ -947,7 +947,7 @@ class SocialChatApp:
                 text=f"{author_name}: {cmt_content}",
                 bg="#F0F7F4",
                 fg="#2C3E50",
-                font=("Arial", 9.5),
+                font=("Arial", 9),
                 anchor="w",
                 justify="left",
                 wraplength=580,
