@@ -85,28 +85,61 @@ suggested_id_num = False
 suggested_name = False
 suggested_dob = False
 suggested_address = False
+suggested_gender = False
+suggested_nationality = False
+suggested_identify_feature = False
 document_type = "Không xác định (Tự chọn)"
 suggested_cv_contact = False
 
 # 1. Nếu là Căn cước công dân
-if 'can cuoc' in all_ocr_text or 'citizen' in all_ocr_text:
-    document_type = "Căn cước công dân (Mặt trước/sau)"
-    suggested_face = True
-    suggested_barcode = True
+# if 'can cuoc' in all_ocr_text or 'citizen' in all_ocr_text:
+#     document_type = "Căn cước công dân (Mặt trước/sau)"
+#     suggested_face = True
+#     suggested_barcode = True
+#     suggested_finger = True
+#     suggested_qr = True
+#     suggested_id_num = True
+#     suggested_name = True
+#     suggested_dob = True
+#     suggested_address = True
+# CCCD mặt sau
+if (
+    'dac diem nhan dang' in all_ocr_text or 'ngon tro trai' in all_ocr_text or 'ngon tro phai' in all_ocr_text or 'left index' in all_ocr_text or 'right index' in all_ocr_text or 'ngay cap' in all_ocr_text or 'date of issue' in all_ocr_text
+):
+    document_type = "Căn cước công dân - Mặt sau"
+    document_side = "back"
+
+    suggested_barcode = False
     suggested_finger = True
+
+    suggested_address = False
+    suggested_identity_feature = False
+
+# CCCD mặt trước
+elif (
+    'can cuoc' in all_ocr_text or 'citizen identity card' in all_ocr_text or 'citizen' in all_ocr_text or 'quoc tich' in all_ocr_text or 'nationality' in all_ocr_text or 'ngay sinh' in all_ocr_text or 'date of birth' in all_ocr_text
+):
+    document_type = "Căn cước công dân - Mặt trước"
+    document_side = "front"
+
+    suggested_face = True
+    suggested_barcode = False
     suggested_qr = True
+    suggested_gender = False
+    suggested_nationality = False
+
     suggested_id_num = True
     suggested_name = True
     suggested_dob = True
     suggested_address = True
-
 # 2. Nếu là Bảo hiểm y tế
 elif 'bao hiem y te' in all_ocr_text or 'bhyt' in all_ocr_text or 'the bhyt' in all_ocr_text:
     document_type = "Thẻ Bảo hiểm y tế"
     suggested_id_num = True  # Mã số BHYT
-    suggested_name = True    # Họ tên
+    suggested_name = False    # Họ tên
     suggested_dob = True     # Ngày sinh
-    suggested_barcode = True # Thường BHYT có mã vạch ở đáy
+    suggested_barcode = False # Thường BHYT có mã vạch ở đáy
+    suggested_address = True
     # BHYT giấy không có QR, vân tay, khuôn mặt nên giữ False
 
 # 3. Nếu là Thẻ sinh viên
@@ -151,11 +184,14 @@ def get_user_preferences():
     var_barcode = tk.BooleanVar(value=suggested_barcode)
     var_finger = tk.BooleanVar(value=suggested_finger)
     var_qr = tk.BooleanVar(value=suggested_qr)
+    var_identity_feature = tk.BooleanVar(value=suggested_identify_feature)
 
     var_id_num = tk.BooleanVar(value=suggested_id_num)    
     var_name = tk.BooleanVar(value=suggested_name)      
     var_dob = tk.BooleanVar(value=suggested_dob)       
-    var_address = tk.BooleanVar(value=suggested_address)   
+    var_address = tk.BooleanVar(value=suggested_address)  
+    var_gender = tk.BooleanVar(value=suggested_gender)
+    var_nationality = tk.BooleanVar(value=suggested_nationality) 
     var_cv_contact = tk.BooleanVar(value=suggested_cv_contact)
 
     # Hiển thị loại giấy tờ AI nhận diện được lên giao diện
@@ -179,8 +215,11 @@ def get_user_preferences():
     
     # SỬA SỐ 2 THÀNH f2 Ở ĐÂY:
     tk.Checkbutton(f2, text="Che Số giấy tờ (Số định danh/Số thẻ)", variable=var_id_num, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
+    tk.Checkbutton(f2, text="Che Đặc điểm nhận dạng", variable=var_identity_feature, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
     tk.Checkbutton(f2, text="Che Họ và tên", variable=var_name, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
-    tk.Checkbutton(f2, text="Che Ngày tháng năm sinh", variable=var_dob, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
+    tk.Checkbutton(f2, text="Che Ngày tháng năm", variable=var_dob, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
+    tk.Checkbutton(f2, text="Che Giới tính", variable=var_gender, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
+    tk.Checkbutton(f2, text="Che Quốc tịch", variable=var_nationality, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
     tk.Checkbutton(f2, text="Che Địa chỉ (Quê quán, Thường trú)", variable=var_address, bg="#F0F7F4", font=("Arial", 10)).pack(anchor="w", padx=20)
     tk.Checkbutton(f2,text="Che Email / Số điện thoại trong CV",variable=var_cv_contact,bg="#F0F7F4",font=("Arial", 10)).pack(anchor="w", padx=20)
     prefs = {}
@@ -194,6 +233,9 @@ def get_user_preferences():
         prefs['id_num'] = var_id_num.get()
         prefs['name'] = var_name.get()
         prefs['dob'] = var_dob.get()
+        prefs['gender'] = var_gender.get()
+        prefs['nationality'] = var_nationality.get()
+        prefs['identity_feature'] = var_identity_feature.get()
         prefs['address'] = var_address.get()
         prefs['cv_contact'] = var_cv_contact.get()
         root.destroy()
@@ -232,13 +274,20 @@ if user_choices['name']:
     next_line_keywords.extend(['ho va ten', 'ho ten', 'full name', 'name'])
 
 if user_choices['dob']:
-    sensitive_keywords.extend(['ngay sinh', 'sinh ngay', 'date of birth', 'dob', 'ngay cap', 'date of issue', 'ngay het han', 'co gia tri den', 'expiry', 'valid until', 'nam sinh:'])
-    next_line_keywords.extend(['sinh ngay', 'ngay sinh', 'date of birth', 'ngay cap', 'ngay het han', 'expiry', 'co gia tri den'])
+    sensitive_keywords.extend(['ngay sinh', 'sinh ngay', 'date of birth', 'dob', 'ngay cap', 'date of issue', 'ngay het han','ngay bat dau hieu luc', 'ngay het hieu luc', 'co gia tri den', 'expiry', 'valid until', 'nam sinh:'])
+    next_line_keywords.extend(['sinh ngay', 'ngay sinh', 'date of birth', 'ngay cap', 'ngay het han', 'expiry', 'co gia tri den', 'ngay bat dau hieu luc'])
+
+if user_choices.get('gender'):
+    sensitive_keywords.extend(['gioi tinh', 'sex', 'gender'])
+
+if user_choices.get('nationality'):
+    sensitive_keywords.extend(['quoc tich','nationality'])
 
 if user_choices['address']:
-    sensitive_keywords.extend(['que quan', 'place of origin', 'noi sinh', 'place of birth', 'noi thuong tru', 'thuong tru', 'place of residence', 'residence', 'dia chi', 'address', 'noi o hien tai', 'noi dki kcb ban dau', 'noi dk kcb'])
-    multi_line_keywords.extend(['que quan', 'place of origin', 'noi sinh', 'place of birth', 'noi thuong tru', 'thuong tru', 'place of residence', 'residence', 'dia chi', 'address', 'noi o hien tai', 'noi dki kcb ban dau'])
+    sensitive_keywords.extend(['que quan', 'place of origin', 'noi sinh', 'place of birth', 'noi thuong tru', 'thuong tru', 'place of residence', 'residence', 'dia chi', 'address', 'noi o hien tai', 'noi dki kcb ban dau', 'noi dk kcb', 'noi kcbbđ'])
+    multi_line_keywords.extend(['que quan', 'place of origin', 'noi sinh', 'place of birth', 'noi thuong tru', 'thuong tru', 'place of residence', 'residence', 'dia chi', 'address', 'noi o hien tai'])
     vietnam_address_words.extend(['tp hcm', 'tphcm', 'ho chi minh', 'ha noi', 'da nang', 'can tho', 'hai phong', 'binh duong', 'dong nai', 'long an', 'ba ria', 'vung tau', 'quan', 'huyen', 'thi xa', 'thanh pho', 'phuong', 'xa', 'thi tran', 'ap', 'thon', 'khu pho', 'duong', 'so nha'])
+
 if user_choices.get('cv_contact'):
     # CV contact xử lý riêng ở hàm redact_cv_contact_smart().
     # KHÔNG thêm email/e-mail/mail/contact vào sensitive_keywords/next_line_keywords,
@@ -251,8 +300,11 @@ if user_choices.get('cv_contact'):
     next_line_keywords.extend([
         'dien thoai', 'so dien thoai', 'phone', 'mobile', 'tel'
     ])
-sensitive_keywords.extend(['dac diem nhan dang', 'personal identification', 'nhan dang'])
-multi_line_keywords.extend(['dac diem nhan dang', 'personal identification'])
+# sensitive_keywords.extend(['dac diem nhan dang', 'personal identification', 'nhan dang'])
+# multi_line_keywords.extend(['dac diem nhan dang', 'personal identification'])
+if user_choices.get('identity_feature'):
+    sensitive_keywords.extend(['dac diem nhan dang', 'personal identification', 'nhan dang'])
+    multi_line_keywords.extend(['dac diem nhan dang', 'personal identification'])
 
 FACE_AREA_RATIO = {
     "x1": 0.03, "y1": 0.4, "x2": 0.30, "y2": 0.82,
@@ -391,27 +443,49 @@ def line_has_sensitive_pattern(text):
 
     # Nếu người dùng chọn che số định danh
     if user_choices['id_num']:
-        # Bắt CMND 9 số, CCCD 12 số
+        norm_text = normalize_text(text)
+
+        id_labels = [
+            'ma so',
+            'ma the',
+            'so the',
+            'so bhyt',
+            'so cccd',
+            'so dinh danh',
+            'id no', 'ma so bhyt'
+        ]
+
+        has_id_label = any(k in norm_text for k in id_labels)
+
+        # Với BHYT: chỉ bắt mã số khi dòng có nhãn mã số/số thẻ.
+        if document_type.startswith("Thẻ Bảo hiểm"):
+            if has_id_label and re.search(r'(?:\d[\s.-]?){10,15}', text):
+                return True
+            return False
+
+        # Với CCCD/thẻ khác: giữ logic bắt số định danh.
         if re.search(r'(?:\d[\s.-]?){12}', text) or re.search(r'(?:\d[\s.-]?){9}', text):
             return True
 
-        # Bắt thẻ BHYT hoặc hộ chiếu
-        if re.search(r'[a-zA-Z]{2}\d{10}', compact_text) or re.search(r'[A-Z]\d{7,8}', compact_text):
-            return True
-
-        # Bắt mã số định danh khác 10-13 số
-        if re.search(r'\d{10,13}', compact_text):
-            return True
-
-        # Bắt dòng chỉ có đúng 9 hoặc 12 chữ số
-        if len(digits_only) in [9, 12]:
+        if has_id_label and re.search(r'\d{10,15}', compact_text):
             return True
 
     # Nếu người dùng chọn che ngày tháng năm sinh
+    # if user_choices['dob']:
+    #     if re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text) or re.search(r'\d{4}[\/\-.]\d{2}[\/\-.]\d{2}', text):
+    #         return True
     if user_choices['dob']:
-        if re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text) or re.search(r'\d{4}[\/\-.]\d{2}[\/\-.]\d{2}', text):
-            return True
+        norm_text = normalize_text(text)
+        dob_labels = ['ngay sinh', 'sinh ngay', 'date of birth', 'dob'
+        ]
 
+        has_dob_label = any(label in norm_text for label in dob_labels)
+
+        if has_dob_label:
+            if (
+                re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text) or re.search(r'\d{4}[\/\-.]\d{2}[\/\-.]\d{2}', text)
+            ):
+                return True
     return False
 def redact_cv_contact_smart(img, ocr_items, line_items):
     """
@@ -756,48 +830,229 @@ def add_next_value_line(index, scan_next=3):
         redact_boxes.append((candidate['x1'], candidate['y1'], candidate['x2'], candidate['y2']))
         break
 
+# def add_value_on_same_line(line, label_keywords):
+#     colon_x = None
+#     for it in sorted(line['items'], key=lambda i: i['x1']):
+#         if ':' in it['text']:
+#             colon_x = it['x2']
+#             break
+
+#     label_end_x = find_label_end_x(line, label_keywords)
+
+#     start_x = colon_x or label_end_x
+#     if start_x and line['x2'] > start_x + 5:
+#         redact_boxes.append((start_x, line['y1'], line['x2'], line['y2']))
+#         return True
+#     return False
+def find_next_label_start_x(line, current_start_x, all_label_keywords):
+    items = sorted(line['items'], key=lambda i: i['x1'])
+
+    for item in items:
+        if item['x1'] <= current_start_x + 3:
+            continue
+
+        item_norm = clean_label_text(item['text'])
+
+        for kw in all_label_keywords:
+            kw_norm = clean_label_text(kw)
+            if item_norm == kw_norm or kw_norm in item_norm:
+                return item['x1']
+
+    return None
+
+
 def add_value_on_same_line(line, label_keywords):
+    items = sorted(line['items'], key=lambda i: i['x1'])
+
+    label_end_x = find_label_end_x(line, label_keywords)
+    if not label_end_x:
+        return False
+
     colon_x = None
-    for it in sorted(line['items'], key=lambda i: i['x1']):
+
+    # Chỉ lấy dấu ':' nằm sau đúng label đang xử lý
+    for it in items:
+        if it['x1'] < label_end_x - 3:
+            continue
+
         if ':' in it['text']:
             colon_x = it['x2']
             break
 
-    label_end_x = find_label_end_x(line, label_keywords)
-
     start_x = colon_x or label_end_x
-    if start_x and line['x2'] > start_x + 5:
-        redact_boxes.append((start_x, line['y1'], line['x2'], line['y2']))
+
+    all_field_labels = (
+        name_label_keywords
+        + dob_label_keywords
+        + gender_label_keywords
+        + nationality_label_keywords
+        + [
+            'que quan',
+            'place of origin',
+            'noi thuong tru',
+            'thuong tru',
+            'place of residence',
+            'residence',
+            'dia chi',
+            'address'
+        ]
+    )
+
+    next_label_x = find_next_label_start_x(line, start_x, all_field_labels)
+    end_x = next_label_x - 5 if next_label_x else line['x2']
+
+    if end_x > start_x + 5:
+        redact_boxes.append((start_x, line['y1'], end_x, line['y2']))
         return True
+
     return False
+def find_label_start_x(line, keywords):
+    items = sorted(line['items'], key=lambda i: i['x1'])
+    cleaned_tokens = []
+
+    for item in items:
+        token = normalize_text(item['text'])
+        token = re.sub(r'[^a-z0-9 ]+', ' ', token)
+        token = re.sub(r'\s+', ' ', token).strip()
+        cleaned_tokens.append(token)
+
+    sorted_keywords = sorted(keywords, key=lambda k: len(k.split()), reverse=True)
+
+    for kw in sorted_keywords:
+        kw_clean = normalize_text(kw)
+        kw_clean = re.sub(r'[^a-z0-9 ]+', ' ', kw_clean)
+        kw_clean = re.sub(r'\s+', ' ', kw_clean).strip()
+        kw_parts = kw_clean.split()
+
+        for i in range(len(cleaned_tokens) - len(kw_parts) + 1):
+            chunk = " ".join(cleaned_tokens[i:i + len(kw_parts)])
+            if chunk == kw_clean:
+                return items[i]['x1']
+
+    return None
 
 redact_boxes = []
 name_label_keywords = ['ho va ten', 'ho ten', 'va ten', 'ten', 'full name', 'name']
 dob_label_keywords = ['sinh ngay', 'ngay sinh', 'date of birth', 'dob', 'nam sinh']
+gender_label_keywords = ['gioi tinh', 'sex', 'gender']
+nationality_label_keywords = ['quoc tich', 'nationality']
 
 for index, line in enumerate(line_items):
     is_sensitive = False
     norm = line['norm_text']
     text = line['text']
 
+    address_labels = [
+    'que quan',
+    'place of origin',
+    'noi thuong tru',
+    'thuong tru',
+    'place of residence',
+    'residence',
+    'dia chi',
+    'address'
+]
+
+    if not user_choices.get('address') and any(k in norm for k in address_labels):
+        continue
     # Fix riêng cho thẻ sinh viên: "Sinh ngày:" là label, không phải value.
     # Vì user đang tick Che Họ tên / Che Ngày sinh, ta xử lý label trước generic keyword.
     handled_label = False
 
     if user_choices.get('name') and is_any_label_line(line, name_label_keywords):
-        if line_is_label_only(line, name_label_keywords):
+        colon_x = None
+
+        for it in sorted(line['items'], key=lambda i: i['x1']):
+            if ':' in it['text']:
+                colon_x = it['x2']
+                break
+        if colon_x and line['x2'] > colon_x + 5:
+            redact_boxes.append((colon_x + 3, line['y1'], line['x2'] + 5, line['y2']))
+        elif line_is_label_only(line, name_label_keywords):
             add_next_value_line(index, scan_next=3)
         else:
             add_value_on_same_line(line, name_label_keywords)
         handled_label = True
 
-    if user_choices.get('dob') and is_any_label_line(line, dob_label_keywords):
-        if line_is_label_only(line, dob_label_keywords):
-            add_next_value_line(index, scan_next=3)
-        else:
-            add_value_on_same_line(line, dob_label_keywords)
+    bhyt_id_keywords = ['ma so', 'ma the', 'so the', 'so bhyt']
+
+    if user_choices.get('id_num') and document_type.startswith("Thẻ Bảo hiểm") and has_keyword(norm, bhyt_id_keywords):
+        label_end_x = find_label_end_x(line, bhyt_id_keywords)
+
+        if label_end_x and line['x2'] > label_end_x + 8:
+            redact_boxes.append((label_end_x + 3, line['y1'], line['x2'] + 5, line['y2']))
+        elif index + 1 < len(line_items):
+            next_line = line_items[index + 1]
+            redact_boxes.append((next_line['x1'], next_line['y1'], next_line['x2'] + 5, next_line['y2']))
+
         handled_label = True
 
+    kcbbd_keywords = [
+    'noi dki kcb ban dau',
+    'noi dk kcb ban dau',
+    'noi dk kcb',
+    'noi kcbbd',
+    'noi kcbbđ',
+    'kcbbd',
+    'kcb ban dau',
+    'noi dang ky kham chua benh ban dau'
+    ]
+
+    if user_choices.get('address') and has_keyword(norm, kcbbd_keywords):
+        label_end_x = find_label_end_x(line, kcbbd_keywords)
+
+        # Dữ liệu nằm cùng dòng sau tiêu đề
+        if label_end_x and line['x2'] > label_end_x + 8:
+            redact_boxes.append((
+                label_end_x + 3,
+                line['y1'],
+                line['x2'] + 5,
+                line['y2']
+            ))
+
+        # Dữ liệu nằm dòng dưới
+        else:
+            for j in range(index + 1, min(index + 3, len(line_items))):
+                redact_boxes.append((
+                    line_items[j]['x1'],
+                    line_items[j]['y1'],
+                    line_items[j]['x2'] + 5,
+                    line_items[j]['y2']
+                ))
+                
+
+        handled_label = True
+
+    if user_choices.get('dob') and (
+        'ngay sinh' in norm
+        or 'sinh ngay' in norm
+        or 'date of birth' in norm
+        or 'dob' in norm or 'ngay bat dau hieu luc' in norm or 'ngay het hieu luc' in norm
+    ):
+        m = re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text)
+
+        if m:
+            x1 = int(line['x1'] + (line['x2'] - line['x1']) * (m.start() / len(text)))
+            x2 = int(line['x1'] + (line['x2'] - line['x1']) * (m.end() / len(text)))
+            redact_boxes.append((max(0, x1 - 90), line['y1'], x2 + 5, line['y2']))
+        else:
+            add_next_value_line(index, scan_next=2)
+
+        handled_label = True
+        
+    # Xử lý riêng dòng: Giới tính ... Quốc tịch ...
+    if 'gioi tinh' in norm and 'quoc tich' in norm:
+        gt_x = int(line['x1'] + (line['x2'] - line['x1']) * 0.28)
+        qt_x = int(line['x1'] + (line['x2'] - line['x1']) * 0.52)
+
+        if user_choices.get('gender'):
+            redact_boxes.append((gt_x, line['y1'], qt_x - 5, line['y2']))
+
+        if user_choices.get('nationality'):
+            redact_boxes.append((qt_x, line['y1'], line['x2'], line['y2']))
+
+        handled_label = True
+    
     if handled_label:
         continue
     
@@ -808,12 +1063,16 @@ for index, line in enumerate(line_items):
 
     if has_keyword(norm, multi_line_keywords):
         for j in range(index + 1, min(index + 5, len(line_items))):
-            redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
+            redact_boxes.append((line_items[j]['x1'] - 90, line_items[j]['y1'], line_items[j]['x2'] + 5, line_items[j]['y2']))
 
     if has_keyword(norm, next_line_keywords):
         for j in range(index + 1, min(index + 2, len(line_items))):  # bắt đầu từ dòng SAU
+            next_norm = line_items[j]['norm_text']
+
+            if not user_choices.get('address') and any(k in next_norm for k in address_labels):
+                continue
             if not next_line_is_another_label(line_items[j]):
-                redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
+                redact_boxes.append((line_items[j]['x1'] - 90, line_items[j]['y1'], line_items[j]['x2'] + 5, line_items[j]['y2']))
 
     if is_sensitive:
         colon_x = None
@@ -824,13 +1083,13 @@ for index, line in enumerate(line_items):
 
         # Với mọi giấy tờ, nếu có label "Sinh ngày" / "Họ và tên" trên cùng dòng,
         # chỉ che phần dữ liệu sau label, không che luôn chữ label.
-        label_end_x = find_label_end_x(line, name_label_keywords + dob_label_keywords)
+        label_end_x = find_label_end_x(line, name_label_keywords + dob_label_keywords + gender_label_keywords + nationality_label_keywords)
 
         if colon_x and line['x2'] > colon_x + 5:
             redact_boxes.append((colon_x, line['y1'], line['x2'], line['y2']))
         elif label_end_x and line['x2'] > label_end_x + 5:
             redact_boxes.append((label_end_x, line['y1'], line['x2'], line['y2']))
-        elif not is_any_label_line(line, name_label_keywords + dob_label_keywords):
+        elif not is_any_label_line(line, name_label_keywords + dob_label_keywords + gender_label_keywords + nationality_label_keywords):
             redact_boxes.append((line['x1'], line['y1'], line['x2'], line['y2']))
 
 # for item in ocr_items:
@@ -869,7 +1128,7 @@ if REDACT_FINGERPRINT:
         norm = item['norm_text']
         x1, y1, x2, y2 = item['x1'], item['y1'], item['x2'], item['y2']
         h_text = y2 - y1
-        box_data = {'x1': max(0, x1 - int(h_text * 1.5)), 'y1': max(0, y1 - int(h_text * 9)), 'x2': min(img.shape[1], x2 + int(h_text * 1.5)), 'y2': max(0, y1 - 2), 'text': item['text']}
+        box_data = {'x1': max(0, x1 - int(h_text * 3.0)), 'y1': max(0, y1 - int(h_text * 14)), 'x2': min(img.shape[1], x2 + int(h_text * 3.0)), 'y2': max(0, y1 + int (h_text  * 0.3)), 'text': item['text']}
         if any(a in norm for a in left_anchors): left_finger_boxes.append(box_data)
         elif any(a in norm for a in right_anchors): right_finger_boxes.append(box_data)
 
