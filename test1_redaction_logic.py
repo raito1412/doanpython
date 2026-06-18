@@ -1,4 +1,4 @@
-import os
+﻿import os
 import cv2
 import easyocr
 import re
@@ -81,13 +81,13 @@ def process_and_redact(image_path, output_path, parent_window):
     # --- 3. LOGIC AI ĐỀ XUẤT TỰ ĐỘNG ---
     suggestions = {
         'face': False, 'barcode': False, 'finger': False, 'qr': False,
-        'id_num': False, 'name': False, 'dob': False, 'address': False, 'cv_contact': False
+        'id_num': False, 'name': False, 'dob': False, 'address': False, 'cv_contact': False, 'plate': False
     }
     document_type = "Không xác định (Tự chọn)"
 
     if 'can cuoc' in all_ocr_text or 'citizen' in all_ocr_text:
         document_type = "Căn cước công dân (Mặt trước)"
-        suggestions.update({'face': True, 'barcode': True, 'finger': True, 'qr': True, 'id_num': True, 'name': True, 'dob': True, 'address': True})
+        suggestions.update({'face': True, 'barcode': False, 'finger': False, 'qr': True, 'id_num': True, 'name': True, 'dob': True, 'address': True})
     elif 'dac diem nhan dang' in all_ocr_text or 'personal identification' in all_ocr_text:
         document_type = "Căn cước công dân (Mặt sau)"
         suggestions.update({'finger': True, 'id_num': True, 'name': True})
@@ -127,6 +127,7 @@ def process_and_redact(image_path, output_path, parent_window):
     var_dob = tk.BooleanVar(value=suggestions['dob'])       
     var_address = tk.BooleanVar(value=suggestions['address'])   
     var_cv_contact = tk.BooleanVar(value=suggestions['cv_contact'])
+    var_plate = tk.BooleanVar(value=suggestions['plate'])
 
     tk.Label(dialog, text=f"🔍 AI nhận diện: {document_type}", bg="#E8F1F5", fg="#1D3557", font=("Arial", 11, "italic"), bd=1, relief="solid", padx=10, pady=5).pack(fill="x", padx=30, pady=(15, 5))
     tk.Label(dialog, text="🛠️ ĐIỀU CHỈNH VÙNG CẦN CHE:", bg="#F0F7F4", fg="#2C3E50", font=("Arial", 11, "bold")).pack(pady=5)
@@ -145,7 +146,8 @@ def process_and_redact(image_path, output_path, parent_window):
     tk.Checkbutton(f2, text="Che Ngày sinh", variable=var_dob, bg="#F0F7F4").pack(anchor="w", padx=20)
     tk.Checkbutton(f2, text="Che Địa chỉ", variable=var_address, bg="#F0F7F4").pack(anchor="w", padx=20)
     tk.Checkbutton(f2, text="Che Email / Số điện thoại tự do", variable=var_cv_contact, bg="#F0F7F4").pack(anchor="w", padx=20)
-    
+    tk.Checkbutton(f1, text="Che biển số xe", variable=var_plate, bg="#F0F7F4").pack(anchor="w", padx=20)
+
     def on_submit():
         user_choices['face'] = var_face.get()
         user_choices['barcode'] = var_barcode.get()
@@ -156,6 +158,7 @@ def process_and_redact(image_path, output_path, parent_window):
         user_choices['dob'] = var_dob.get()
         user_choices['address'] = var_address.get()
         user_choices['cv_contact'] = var_cv_contact.get()
+        user_choices['plate'] = var_plate.get()
         is_submitted[0] = True
         dialog.destroy()
 
@@ -227,7 +230,19 @@ def process_and_redact(image_path, output_path, parent_window):
             if re.search(r'\d{10,13}', compact_text): return True
             if len(digits_only) in [9, 12]: return True
         if user_choices['dob']:
-            if re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text) or re.search(r'\d{4}[\/\-.]\d{2}[\/\-.]\d{2}', text): return True
+            norm_text = normalize_text(text)
+            has_dob_label = any(k in norm_text for k in [
+                'ngay sinh',
+                'sinh ngay',
+                'date of birth',
+                'dob'
+            ])
+
+            if has_dob_label and (
+                re.search(r'\d{2}[\/\-.]\d{2}[\/\-.]\d{4}', text)
+                or re.search(r'\d{4}[\/\-.]\d{2}[\/\-.]\d{2}', text)
+            ):
+                return True
         return False
 
     def redact_cv_portrait_area(img_ref):
@@ -281,7 +296,7 @@ def process_and_redact(image_path, output_path, parent_window):
                         break
                 if not added: merged.append(box)
             return merged
-
+        
         def redact_email_rect(x1, y1, x2, y2):
             redact_rect(img_ref, max(0, x1 - 3), max(0, y1 - 7), min(img_w, x2 + 3), min(img_h, y2 + 4), padding=0)
 
@@ -399,7 +414,41 @@ def process_and_redact(image_path, output_path, parent_window):
 
             for x1, y1, x2, y2 in merge_boxes_local(boxes, distance_x=10, distance_y=6):
                 redact_email_rect(x1, y1, x2, y2)
+    def redact_license_plates(img_ref, ocr_items):
+        plate_patterns = [
+            r'\d{2}[A-Z]{1,2}\d?[-.]?\d{3,5}[.]?\d{0,2}',
+            r'\d{2}[-.]?[A-Z]{1,2}\d?[-.]?\d{3,5}[.]?\d{0,2}',
+        ]
 
+        items = sorted(ocr_items, key=lambda i: (i['y1'], i['x1']))
+
+        for i in range(len(items)):
+            group = items[i:i+4]
+
+            text = ''.join(item['text'].upper() for item in group)
+            compact = re.sub(r'[^A-Z0-9]', '', text)
+
+            # Bien so thuong co 2 so dau + chu cai + it nhat 4 so
+            looks_like_plate = (
+                re.search(r'\d{2}[A-Z]{1,2}\d?', compact)
+                and len(re.findall(r'\d', compact)) >= 6
+                and len(compact) <= 12
+            )
+
+            if looks_like_plate or any(re.search(p, compact) for p in plate_patterns):
+                x1 = min(item['x1'] for item in group)
+                y1 = min(item['y1'] for item in group)
+                x2 = max(item['x2'] for item in group)
+                y2 = max(item['y2'] for item in group)
+
+                redact_rect(
+                    img_ref,
+                    x1 - 8,
+                    y1 - 8,
+                    x2 + 8,
+                    y2 + 8,
+                    padding=0
+                )
     # ==========================================
     # 6. SỬ DỤNG OCR ĐỂ GOM DÒNG VÀ VẼ CHE
     # ==========================================
@@ -460,16 +509,52 @@ def process_and_redact(image_path, output_path, parent_window):
     
     redact_boxes = []
     date_pattern = r'\d{1,2}[\/\-.\s]+\d{1,2}[\/\-.\s]+\d{2,4}'
-    stop_labels = ['ngay sinh', 'sinh ngay', 'date of birth', 'dob', 'nam sinh', 'nganh', 'khoa hoc', 'khoa', 'que quan', 'dia chi', 'gioi tinh', 'ho ten', 'ho va ten', 'name']
+    stop_labels = [
+    'ngay sinh', 'sinh ngay', 'date of birth', 'dob', 'nam sinh',
+    'nganh', 'khoa hoc', 'khoa',
+    'que quan', 'place of origin',
+    'noi thuong tru', 'thuong tru', 'place of residence',
+    'dia chi', 'address',
+    'gioi tinh', 'sex', 'quoc tich', 'nationality',
+    'ho ten', 'ho va ten', 'name'
+]
+    
+    def next_line_is_another_label(line):
+        return any(label in line['norm_text'] for label in stop_labels)
 
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     phone_pattern = r'(0|84|\+84)[3|5|7|8|9][0-9]{8}\b'
+    address_start_y = None
+    # if not user_choices['address']:
+    #     address_anchor_keywords = [
+    #         'que quan',
+    #         'place of origin',
+    #         'noi thuong tru',
+    #         'thuong tru',
+    #         'place of residence',
+    #         'dia chi',
+    #         'address'
+    #     ]
+    #     for line in line_items:
+    #         if any(keyword in line['norm_text'] for keyword in address_anchor_keywords):
+    #             address_start_y = line['y1']
+    #             break
 
     for index, line in enumerate(line_items):
         is_sensitive = False
         norm = line['norm_text']
         text = line['text']
-
+        address_labels = ['que quan',
+            'place of origin',
+            'noi thuong tru',
+            'thuong tru',
+            'place of residence',
+            'residence',
+            'dia chi',
+            'address'
+        ]
+        if not user_choices.get('address') and any(k in norm for k in address_labels):
+            continue
         if any(kw in norm for kw in ['het han', 'nganh', 'khoa hoc', 'nien khoa', 'truong dai hoc', 'the sinh vien']): continue 
 
         if not user_choices['dob']:
@@ -494,10 +579,23 @@ def process_and_redact(image_path, output_path, parent_window):
                 for match in matches:
                     start_char, end_char = match.span()
                     char_width = (line['x2'] - line['x1']) / max(1, len(text))
-                    redact_rect(img, int(line['x1'] + (start_char * char_width)), line['y1'], int(line['x1'] + (end_char * char_width)), line['y2'])
-            else: 
+                    redact_rect(img, int(line['x1'] + (start_char * char_width)) - 80, line['y1'], int(line['x1'] + (end_char * char_width)) + 85, line['y2'])
+            else:
                 if has_keyword(norm, next_line_keywords):
-                    for j in range(index + 1, min(index + 2, len(line_items))): redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
+                    for j in range(index + 1, min(index + 2, len(line_items))):
+                        next_line = line_items[j]
+
+                        # Nếu dòng kế tiếp là nhãn khác như Giới tính, Quốc tịch, Quê quán,
+                        # thì dừng, không che lan xuống địa chỉ.
+                        if any(label in next_line['norm_text'] for label in stop_labels):
+                            break
+
+                        # Chỉ che dòng kế tiếp nếu dòng đó thật sự có dạng ngày.
+                        if re.search(date_pattern, next_line['text']):
+                            redact_boxes.append((
+                                next_line['x1'], next_line['y1'],
+                                next_line['x2'], next_line['y2']
+                            ))
             continue 
 
         if user_choices['name'] and any(kw in norm for kw in ['ho va ten', 'ho ten', 'full name', 'name']):
@@ -531,9 +629,19 @@ def process_and_redact(image_path, output_path, parent_window):
                 redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
 
         if has_keyword(norm, next_line_keywords):
-            for j in range(index + 1, min(index + 2, len(line_items))):  
-                if any(label in line_items[j]['norm_text'] for label in stop_labels) or (not user_choices['dob'] and re.search(date_pattern, line_items[j]['text'])): break
-                redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
+            for j in range(index + 1, min(index + 2, len(line_items))):
+                next_norm = line_items[j]['norm_text']
+
+                if not user_choices.get('address') and any(k in next_norm for k in address_labels):
+                    continue
+
+                if not next_line_is_another_label(line_items[j]):
+                    redact_boxes.append((
+                        line_items[j]['x1'],
+                        line_items[j]['y1'],
+                        line_items[j]['x2'],
+                        line_items[j]['y2']
+                    ))
 
         if is_sensitive: redact_boxes.append((line['x1'], line['y1'], line['x2'], line['y2']))
 
@@ -582,6 +690,9 @@ def process_and_redact(image_path, output_path, parent_window):
 
     if user_choices['cv_contact']:
         redact_cv_contact_smart(img, ocr_items, line_items)
+        
+    if user_choices.get('plate'):
+        redact_license_plates(img, ocr_items)
 
     if user_choices['barcode']:
         try:
