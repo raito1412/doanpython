@@ -700,6 +700,149 @@ def process_and_redact(image_path, output_path, parent_window):
 
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     phone_pattern = r'(0|84|\+84)[3|5|7|8|9][0-9]{8}\b'
+    ADDRESS_LEFT_PAD = 20
+    ADDRESS_RIGHT_PAD = 20
+    ADDRESS_TOP_PAD = 6
+    ADDRESS_BOTTOM_PAD = 18
+
+    def redact_cccd_origin_and_residence():
+        """
+        Che riêng Quê quán và Nơi thường trú theo OCR item.
+        Không che nhãn, chỉ che phần nội dung bên dưới/sau nhãn.
+        """
+        if not user_choices.get('address'):
+            return
+
+        origin_label = None
+        residence_label = None
+
+        for item in ocr_items:
+            norm_item = item['norm_text']
+
+            if origin_label is None and (
+                'que quan' in norm_item
+                or 'place oforigin' in norm_item
+                or 'place of origin' in norm_item
+            ):
+                origin_label = item
+
+            if residence_label is None and (
+                'noi thuong tru' in norm_item
+                or 'thuong tru' in norm_item
+                or 'place of residence' in norm_item
+            ):
+                residence_label = item
+
+        # =========================
+        # 1. CHE QUÊ QUÁN
+        # =========================
+        if origin_label:
+            origin_y_start = origin_label['y2'] - 35
+
+            # Nếu có nơi thường trú thì quê quán chỉ nằm trước nơi thường trú
+            if residence_label:
+                origin_y_end = residence_label['y1'] + 10
+            else:
+                origin_y_end = origin_label['y2'] + 160
+
+            for item in ocr_items:
+                item_norm = item['norm_text']
+
+                # Bỏ qua chính label Quê quán
+                if item is origin_label:
+                    continue
+
+                # Bỏ qua các nhãn
+                if any(k in item_norm for k in [
+                    'que quan',
+                    'place of origin',
+                    'place oforigin',
+                    'noi thuong tru',
+                    'thuong tru',
+                    'place of residence',
+                    'gioi tinh',
+                    'sex',
+                    'quoc tich',
+                    'nationality',
+                    'date of expiry',
+                    'co gia tri den',
+                    'ngay sinh',
+                    'date of birth'
+                ]):
+                    continue
+
+                # Chỉ lấy item nằm vùng dưới Quê quán
+                item_center_y = (item['y1'] + item['y2']) // 2
+                if not (origin_y_start <= item_center_y <= origin_y_end):
+                    continue
+
+                # Bỏ qua vùng bên trái ảnh như ngày hết hạn
+                if item['x2'] < int(img_w * 0.28):
+                    continue
+
+                # Đây là nội dung quê quán, che nguyên item
+                redact_boxes.append((
+                    max(0, item['x1'] - ADDRESS_LEFT_PAD),
+                    max(0, item['y1'] - ADDRESS_TOP_PAD),
+                    min(img_w, item['x2'] + ADDRESS_RIGHT_PAD),
+                    min(img_h, item['y2'] + ADDRESS_BOTTOM_PAD),
+                ))
+
+        # =========================
+        # 2. CHE NƠI THƯỜNG TRÚ
+        # =========================
+        if residence_label:
+            residence_y_start = residence_label['y1'] - 10
+            residence_y_end = residence_label['y2'] + 220
+
+            for item in ocr_items:
+                item_norm = item['norm_text']
+
+                # Bỏ qua vùng bên trái ảnh như hạn thẻ
+                if item['x2'] < int(img_w * 0.28):
+                    continue
+
+                item_center_y = (item['y1'] + item['y2']) // 2
+                if not (residence_y_start <= item_center_y <= residence_y_end):
+                    continue
+
+                # Bỏ qua các nhãn không phải địa chỉ
+                if any(k in item_norm for k in [
+                    'que quan',
+                    'place of origin',
+                    'place oforigin',
+                    'gioi tinh',
+                    'sex',
+                    'quoc tich',
+                    'nationality',
+                    'date of expiry',
+                    'co gia tri den',
+                    'ngay sinh',
+                    'date of birth'
+                ]):
+                    continue
+
+                # Với dòng "Nơi thường trú / Place of residence B5-47"
+                # thì chỉ che phần cuối sau label, không che chữ Nơi thường trú.
+                if item is residence_label:
+                    value_x1 = int(item['x1'] + (item['x2'] - item['x1']) * 0.68)
+
+                    redact_boxes.append((
+                        max(0, value_x1 - ADDRESS_LEFT_PAD),
+                        max(0, item['y1'] - ADDRESS_TOP_PAD),
+                        min(img_w, item['x2'] + ADDRESS_RIGHT_PAD),
+                        min(img_h, item['y2'] + ADDRESS_BOTTOM_PAD),
+                    ))
+                    continue
+
+                # Các dòng sau nơi thường trú thì che nguyên item
+                redact_boxes.append((
+                    max(0, item['x1'] - ADDRESS_LEFT_PAD),
+                    max(0, item['y1'] - ADDRESS_TOP_PAD),
+                    min(img_w, item['x2'] + ADDRESS_RIGHT_PAD),
+                    min(img_h, item['y2'] + ADDRESS_BOTTOM_PAD),
+                ))
+
     address_start_y = None
     ADDRESS_LEFT_PAD = 8
     ADDRESS_RIGHT_PAD = 14
@@ -891,6 +1034,7 @@ def process_and_redact(image_path, output_path, parent_window):
     # Che riêng địa chỉ CCCD theo từng OCR item
     # để tránh che nguyên cục lớn.
     redact_cccd_address_by_items()
+    redact_cccd_origin_and_residence()
 
     for index, line in enumerate(line_items):
         is_sensitive = False
