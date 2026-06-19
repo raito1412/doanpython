@@ -124,7 +124,7 @@ def process_and_redact(image_path, output_path, parent_window):
         suggestions.update({'id_num': True, 'name': True, 'dob': True, 'barcode': True})
     elif 'sinh vien' in all_ocr_text or 'student' in all_ocr_text:
         document_type = "Thẻ sinh viên / Thẻ học sinh"
-        suggestions.update({'id_num': True, 'name': True, 'barcode': True, 'face': True})
+        suggestions.update({'id_num': True, 'name': True, 'barcode': True, 'face': True,'dob':True})
     elif any(k in all_ocr_text for k in ['ho so', 'cv', 'resume', 'lien he', 'email', 'dien thoai', 'hoc van', 'kinh nghiem', 'ky nang']):
         document_type = "CV / Hồ sơ cá nhân"
         suggestions.update({'face': True, 'cv_contact': True})
@@ -230,8 +230,7 @@ def process_and_redact(image_path, output_path, parent_window):
     if user_choices['id_num']:
         sensitive_keywords.extend(['so', 'so the', 'so cccd', 'so ho chieu', 'ma so thue', 'mst', 'so bhxh', 'so bhyt', 'ma so', 'ma the', 'no'])
     if user_choices['name']:
-        sensitive_keywords.extend(['ho va ten', 'ho ten', 'ten', 'full name', 'name', 'ho ten:'])
-        next_line_keywords.extend(['ho va ten', 'ho ten', 'full name', 'name'])
+        pass
     if user_choices['dob']:
         sensitive_keywords.extend([
             'ngay sinh',
@@ -718,91 +717,107 @@ def process_and_redact(image_path, output_path, parent_window):
 
     def redact_cccd_address_by_items():
         """
-        Che địa chỉ CCCD theo OCR item.
-        Không che nguyên cục line lớn.
-        Xử lý được format:
-        Quê quán / Place of origin:
-        <dòng địa chỉ>
-
-        Nơi thường trú / Place of residence:
-        <dòng địa chỉ>
+        Che địa chỉ CCCD theo OCR item (Bản Fix lỗi trôi tọa độ B5-47).
+        Nhận diện nhãn song ngữ để tránh che đè lên phần tiếng Anh của nhãn.
         """
         if not user_choices['address']:
             return
+
+        # Khai báo biến pad nếu chưa có ở ngoài scope
+        ADDRESS_LEFT_PAD = 8
+        ADDRESS_RIGHT_PAD = 12
+        ADDRESS_TOP_PAD = 2
+        ADDRESS_BOTTOM_PAD = 4
 
         address_labels_found = []
 
         for item in ocr_items:
             item_norm = item['norm_text']
-
-            is_origin_label = any(k in item_norm for k in [
-                'que quan',
-                'place of origin'
-            ])
-
-            is_residence_label = any(k in item_norm for k in [
-                'noi thuong tru',
-                'thuong tru',
-                'place of residence'
-            ])
+            is_origin_label = any(k in item_norm for k in ['que quan', 'place of origin'])
+            is_residence_label = any(k in item_norm for k in ['noi thuong tru', 'thuong tru', 'place of residence'])
 
             if is_origin_label:
-                address_labels_found.append({
-                    'type': 'origin',
-                    'item': item
-                })
-
+                address_labels_found.append({'type': 'origin', 'item': item})
             if is_residence_label:
-                address_labels_found.append({
-                    'type': 'residence',
-                    'item': item
-                })
+                address_labels_found.append({'type': 'residence', 'item': item})
 
         if not address_labels_found:
             return
 
-        address_labels_found = sorted(
-            address_labels_found,
-            key=lambda x: x['item']['y1']
-        )
+        address_labels_found = sorted(address_labels_found, key=lambda x: x['item']['y1'])
 
         for idx, label_data in enumerate(address_labels_found):
             label_item = label_data['item']
-            label_type = label_data['type']
-
             label_norm = label_item['norm_text']
+            start_y = label_item['y1'] - 5 
 
-            # Điểm bắt đầu vùng tìm địa chỉ
-            start_y = label_item['y1']
-
-            # Điểm kết thúc: tới trước label địa chỉ kế tiếp
             if idx + 1 < len(address_labels_found):
-                end_y = address_labels_found[idx + 1]['item']['y1'] + 15
+                end_y = address_labels_found[idx + 1]['item']['y1'] + 10
             else:
                 end_y = img_h
 
-            # TH1: label và giá trị nằm chung 1 OCR item
-            # Ví dụ: Noi thường trú / Place of residence B5-47
-            label_match = re.search(
-                r'(que quan|place of origin|noi thuong tru|thuong tru|place of residence|dia chi|address)\s*[:;/\-\w\s]*',
-                label_norm
-            )
+            # ==========================================
+            # TH1: Nhãn và Giá trị nằm chung 1 item (Cắt Toạ Độ Tuyệt Đối)
+            # ==========================================
+            label_x_start = -1
+            label_x_end = -1
+            
+            # Tìm chính xác mép trái và mép phải của chữ nhãn trong label_item
+            for word in label_item['text'].split():
+                word_norm = normalize_text(word)
+                if any(k in word_norm for k in ['que', 'quan', 'place', 'origin', 'noi', 'thuong', 'tru', 'residence', 'dia', 'chi', 'address']):
+                    # Ước lượng vị trí từ này trong label_item
+                    word_idx = label_item['norm_text'].find(word_norm)
+                    if word_idx != -1:
+                        char_w = (label_item['x2'] - label_item['x1']) / max(1, len(label_item['norm_text']))
+                        w_x1 = int(label_item['x1'] + word_idx * char_w)
+                        w_x2 = int(label_item['x1'] + (word_idx + len(word_norm)) * char_w)
+                        
+                        if label_x_start == -1 or w_x1 < label_x_start: label_x_start = w_x1
+                        if w_x2 > label_x_end: label_x_end = w_x2
 
-            if label_match:
-                # Nếu item có cả label + value, che phần sau label.
-                # Với "Nơi thường trú / Place of residence B5-47",
-                # vùng B5-47 thường nằm ở cuối item.
-                if label_type == 'residence' and len(label_norm) > 25:
-                    value_x1 = int(label_item['x1'] + (label_item['x2'] - label_item['x1']) * 0.72)
-
+            if label_x_start != -1:
+                # CHIỀU 1: Giá trị bị đẩy lên TRƯỚC nhãn
+                if label_item['x1'] < label_x_start - 20:
                     redact_boxes.append((
-                        max(0, value_x1 - ADDRESS_LEFT_PAD),
+                        max(0, label_item['x1'] - ADDRESS_LEFT_PAD), 
+                        max(0, label_item['y1'] - ADDRESS_TOP_PAD),
+                        min(img_w, label_x_start - 8),
+                        min(img_h, label_item['y2'] + ADDRESS_BOTTOM_PAD),
+                    ))
+                
+                # CHIỀU 2: Giá trị nằm SAU nhãn
+                if label_item['x2'] > label_x_end + 20:
+                    redact_boxes.append((
+                        max(0, label_x_end - 25), # SỬA Ở ĐÂY: Trừ 25 pixel thay vì cộng 8 để kéo lùi hộp đen, bắt trọn chữ "B"
                         max(0, label_item['y1'] - ADDRESS_TOP_PAD),
                         min(img_w, label_item['x2'] + ADDRESS_RIGHT_PAD),
                         min(img_h, label_item['y2'] + ADDRESS_BOTTOM_PAD),
                     ))
+            else:
+                # Fallback nếu không bóc được từ
+                # Cập nhật Regex để tiêu thụ luôn dấu hai chấm (:) hoặc dấu phẩy nếu có
+                label_regex = r'(que quan[\s/]*place of origin|noi thuong tru[\s/]*place of residence|thuong tru[\s/]*residence|que quan|noi thuong tru|place of origin|place of residence|dia chi|address)\s*[:;/-]*'
+                matches = list(re.finditer(label_regex, label_norm))
+                
+                if matches:
+                    char_w = (label_item['x2'] - label_item['x1']) / max(1, len(label_norm))
+                    
+                    if matches[0].start() >= 3:
+                        redact_boxes.append((max(0, label_item['x1'] - ADDRESS_LEFT_PAD), max(0, label_item['y1'] - ADDRESS_TOP_PAD), min(img_w, int(label_item['x1'] + matches[0].start() * char_w) - 5), min(img_h, label_item['y2'] + ADDRESS_BOTTOM_PAD)))
+                    
+                    # SỬA Ở ĐÂY: Chỉ cần chuỗi dư ra >= 2 ký tự và trừ lùi 25 pixel
+                    if len(label_norm) - matches[-1].end() >= 2:
+                        redact_boxes.append((
+                            max(0, int(label_item['x1'] + matches[-1].end() * char_w) - 25), 
+                            max(0, label_item['y1'] - ADDRESS_TOP_PAD), 
+                            min(img_w, label_item['x2'] + ADDRESS_RIGHT_PAD), 
+                            min(img_h, label_item['y2'] + ADDRESS_BOTTOM_PAD)
+                        ))
 
-            # TH2: che các OCR item nằm bên dưới label địa chỉ
+            # ==========================================
+            # TH2: Giá trị nằm ở dòng dưới (Các OCR item rời)
+            # ==========================================
             for item in ocr_items:
                 if item is label_item:
                     continue
@@ -810,58 +825,28 @@ def process_and_redact(image_path, output_path, parent_window):
                 item_norm = item['norm_text']
                 item_center_y = (item['y1'] + item['y2']) // 2
 
-                # Chỉ lấy item nằm trong vùng của label hiện tại
-                if item_center_y < start_y:
+                if item_center_y < start_y or item_center_y > end_y:
                     continue
 
-                if item_center_y > end_y:
-                    continue
+                if abs(item_center_y - ((label_item['y1'] + label_item['y2']) // 2)) < 15:
+                    if item['x1'] < label_item['x2'] - 15:
+                        continue 
 
-                # Bỏ qua các nhãn không phải dữ liệu địa chỉ
+                # Bỏ qua tuyệt đối các từ khóa nhãn (kể cả Tiếng Anh bị cắt rời)
                 if any(k in item_norm for k in [
-                    'que quan',
-                    'place of origin',
-                    'noi thuong tru',
-                    'thuong tru',
-                    'place of residence',
-                    'gioi tinh',
-                    'sex',
-                    'quoc tich',
-                    'nationality',
-                    'date of expiry',
-                    'co gia tri den',
-                    'tri den',
-                    'ngay sinh',
-                    'date of birth'
+                    'que quan', 'place of origin', 'origin', 
+                    'noi thuong tru', 'thuong tru', 'place of residence', 'residence',
+                    'gioi tinh', 'sex', 'quoc tich', 'nationality',
+                    'date of expiry', 'co gia tri den', 'tri den', 'ngay sinh', 'date of birth',
+                    'ho va ten', 'ho ten', 'full name'
                 ]):
                     continue
 
-                # Bỏ qua vùng ngày hết hạn bên trái dưới ảnh
-                if item['x2'] < int(img_w * 0.30):
-                    continue
-
-                # Địa chỉ trên CCCD nằm ở vùng bên phải ảnh, không phải phần ảnh chân dung
                 if item['x1'] < int(img_w * 0.25):
                     continue
 
-                # Với quê quán: chỉ lấy item nằm dưới label quê quán,
-                # trước label nơi thường trú.
-                if label_type == 'origin':
-                    if item['y1'] < label_item['y2'] - 10:
-                        continue
-
-                # Với nơi thường trú: lấy item cùng dòng hoặc bên dưới label nơi thường trú.
-                if label_type == 'residence':
-                    if item['y1'] < label_item['y1'] - 5:
-                        continue
-
-                # Dòng phải có vẻ là nội dung địa chỉ
-                looks_like_address_value = (
-                    len(item_norm) >= 3
-                    and not item_norm.isdigit()
-                )
-
-                if looks_like_address_value:
+                # Nếu item dưới nhãn có nội dung -> Che toàn bộ item đó
+                if re.search(r'[a-zA-Z0-9]', item_norm):
                     redact_boxes.append((
                         max(0, item['x1'] - ADDRESS_LEFT_PAD),
                         max(0, item['y1'] - ADDRESS_TOP_PAD),
@@ -871,8 +856,8 @@ def process_and_redact(image_path, output_path, parent_window):
 
     ADDRESS_LEFT_PAD = 8
     ADDRESS_RIGHT_PAD = 12
-    ADDRESS_TOP_PAD = 3
-    ADDRESS_BOTTOM_PAD = 10
+    ADDRESS_TOP_PAD = 0
+    ADDRESS_BOTTOM_PAD = 2
     ADDRESS_NEXT_LINE_LIMIT = 3
 
     address_keywords = [
@@ -887,10 +872,62 @@ def process_and_redact(image_path, output_path, parent_window):
         'dia chi',
         'address',
     ]
+    def redact_cccd_name_by_items():
+        """
+        Che Họ và Tên chống góc nghiêng và không đè nhãn.
+        Chỉ vẽ hộp đen lên các ký tự IN HOA.
+        """
+        if not user_choices['name']:
+            return
 
+        y_name, y_dob = None, None
+
+        # 1. Định vị không gian dọc (Trục Y)
+        for item in ocr_items:
+            norm = item['norm_text']
+            if y_name is None and any(k in norm for k in ['ho va ten', 'ho ten', 'full name']):
+                y_name = item['y1']
+            if y_dob is None and any(k in norm for k in ['ngay sinh', 'date of birth', 'dob']):
+                y_dob = item['y1']
+
+        if not y_name:
+            return
+
+        # Vùng quét an toàn: Từ nhãn Tên đến nhãn Ngày sinh
+        limit_y = y_dob if (y_dob and y_dob > y_name) else y_name + int(img_h * 0.15)
+        Y_PAD = 2
+
+        # 2. Xử lý che thông tin
+        for item in ocr_items:
+            norm = item['norm_text']
+            center_y = (item['y1'] + item['y2']) // 2
+
+            if y_name - 10 <= center_y <= limit_y + 10:
+                if item['x1'] < img_w * 0.25:
+                    continue
+
+                # Lọc bỏ các khoảng trắng/dấu để kiểm tra chữ IN HOA
+                text_alphas = "".join(c for c in item['text'] if c.isalpha())
+                
+                # TH1: Tên đứng độc lập (Các ô chữ IN HOA tách rời)
+                if len(text_alphas) >= 2 and text_alphas.isupper():
+                    # Đảm bảo OCR không nhận diện nhầm chữ nhãn thành in hoa
+                    if not any(k in norm for k in ['ho', 'ten', 'full', 'name', 'ngay', 'sinh', 'date', 'birth']):
+                        redact_boxes.append((item['x1'] - 2, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
+                
+                # TH2: Nhãn và Tên bị OCR gộp dính vào nhau (Ví dụ: "Họ và tên: NGUYỄN VĂN A")
+                else:
+                    match = re.search(r'(ho va ten|ho ten|full name|name)\s*:?', norm)
+                    if match:
+                        char_w = (item['x2'] - item['x1']) / max(1, len(norm))
+                        # Bắt điểm cuối của nhãn, dịch sang phải 12 pixel rồi mới bắt đầu che Tên
+                        val_x1 = int(item['x1'] + match.end() * char_w) + 12
+                        if val_x1 < item['x2']:
+                            redact_boxes.append((val_x1, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
     # Che riêng địa chỉ CCCD theo từng OCR item
     # để tránh che nguyên cục lớn.
     redact_cccd_address_by_items()
+    redact_cccd_name_by_items()
 
     for index, line in enumerate(line_items):
         is_sensitive = False
@@ -1062,18 +1099,6 @@ def process_and_redact(image_path, output_path, parent_window):
 
             continue
 
-        if user_choices['name'] and any(kw in norm for kw in ['ho va ten', 'ho ten', 'full name', 'name']):
-            match = re.search(r'(ho va ten|ho ten|full name|name)\s*:?', norm)
-            if match:
-                start_char = match.end()
-                if start_char < max(1, len(norm)) - 1:
-                    sub_x1 = int(line['x1'] + (start_char * ((line['x2'] - line['x1']) / max(1, len(norm)))))
-                    redact_rect(img, sub_x1, line['y1'], line['x2'], line['y2'])
-            for j in range(index + 1, min(index + 2, len(line_items))):
-                if any(label in line_items[j]['norm_text'] for label in stop_labels) or (not user_choices['dob'] and re.search(date_pattern, line_items[j]['text'])):
-                    break
-                redact_boxes.append((line_items[j]['x1'], line_items[j]['y1'], line_items[j]['x2'], line_items[j]['y2']))
-            continue
 
         # --- CHE TỰ DO SĐT / EMAIL VÀ CÁC THÔNG TIN KHÁC ---
         if user_choices['cv_contact']:
@@ -1150,14 +1175,20 @@ def process_and_redact(image_path, output_path, parent_window):
     # 7. LỚP MỜ HÌNH ẢNH (ẢNH CHÂN DUNG, VÂN TAY, MÃ VẠCH)
     # ==========================================
     if user_choices['qr']:
-        for line in line_items:
-            if any(anchor in line['norm_text'] for anchor in ['can cuoc cong dan', 'citizen identity card', 'can cuoc']):
-                h_text = line['y2'] - line['y1']
-                qr_x1 = line['x2'] + int(h_text * 0.3)
-                qr_y1 = line['y1'] - int(h_text * 2.0)
-                qr_size = int(h_text * 3.0)
-                pixelate_region(img, qr_x1, qr_y1, min(img_w, qr_x1 + qr_size), min(img_h, qr_y1 + qr_size), blocks=12)
-                break
+        # Tìm tọa độ của "Căn cước công dân" hoặc "Số / No" để làm đáy vùng QR
+        qr_y_limit = int(img_h * 0.4) 
+        for item in ocr_items:
+            if any(k in item['norm_text'] for k in ['can cuoc', 'citizen', 'so /', 'no.']):
+                qr_y_limit = max(qr_y_limit, item['y2'])
+        
+        # Mã QR CCCD luôn nằm cô lập ở góc 1/4 trên cùng bên phải.
+        # Pixelate toàn bộ mảng không gian này sẽ triệt tiêu lỗi góc nghiêng.
+        qx1 = int(img_w * 0.8) # Lấy 28% chiều rộng bên phải thẻ
+        qy1 = int(img_w * 0.05)                # Từ mép trên cùng
+        qx2 = img_w - 20             # Đến mép phải
+        qy2 = qr_y_limit - 60  # Xuống sát mép dòng "Số / No."
+        
+        pixelate_region(img, qx1, qy1, qx2, qy2, blocks=15)
 
     if user_choices['finger']:
         left_anchors = ['ngon tro trai', 'left index', 'tro trai']
