@@ -90,6 +90,24 @@ def process_and_redact(image_path, output_path, parent_window):
     all_ocr_text = unicodedata.normalize('NFD', all_ocr_text)
     all_ocr_text = "".join([ch for ch in all_ocr_text if unicodedata.category(ch) != 'Mn'])
 
+    def looks_like_license_plate_text(text):
+        text = unicodedata.normalize('NFD', text.upper())
+        text = ''.join(ch for ch in text if unicodedata.category(ch) != 'Mn')
+        compact = re.sub(r'[^A-Z0-9]', '', text)
+
+        return (
+            re.search(r'\d{2}[A-Z]{1,2}\d?', compact)
+            and len(re.findall(r'\d', compact)) >= 5
+            and 6 <= len(compact) <= 12
+        )
+
+    ocr_texts = [res[1] for res in pre_results]
+    has_plate_candidate = any(looks_like_license_plate_text(t) for t in ocr_texts)
+
+    for i in range(len(ocr_texts) - 1):
+        if looks_like_license_plate_text(ocr_texts[i] + ocr_texts[i + 1]):
+            has_plate_candidate = True
+            break
     # --- 3. LOGIC AI ĐỀ XUẤT TỰ ĐỘNG ---
     suggestions = {
         'face': False,
@@ -102,6 +120,7 @@ def process_and_redact(image_path, output_path, parent_window):
         'address': False,
         'cv_contact': False,
         'plate': False,
+        'driver_license_num': False,
     }
     document_type = "Không xác định (Tự chọn)"
     if 'can cuoc' in all_ocr_text or 'citizen' in all_ocr_text:
@@ -128,8 +147,17 @@ def process_and_redact(image_path, output_path, parent_window):
     elif any(k in all_ocr_text for k in ['ho so', 'cv', 'resume', 'lien he', 'email', 'dien thoai', 'hoc van', 'kinh nghiem', 'ky nang']):
         document_type = "CV / Hồ sơ cá nhân"
         suggestions.update({'face': True, 'cv_contact': True})
-    elif any(k in all_ocr_text for k in ['dang ky xe', 'đăng ký xe', 'chung nhan dang ky xe', 'chứng nhận đăng ký xe']):
+    elif any(k in all_ocr_text for k in ['giay phep lai xe', 'gplx', 'so giay phep', 'ngay cap', 'noi cap']):
+        document_type = "Giấy phép lái xe"
+        suggestions.update({'driver_license_num': True})
+    # elif any(k in all_ocr_text for k in ['dang ky xe', 'đăng ký xe', 'chung nhan dang ky xe', 'chứng nhận đăng ký xe']):
+    #     document_type = "Đăng ký xe"
+    #     suggestions.update({'plate': True})
+    elif any(k in all_ocr_text for k in ['dang ky xe', 'chung nhan dang ky xe']):
         document_type = "Đăng ký xe"
+        suggestions.update({'plate': True})
+    elif has_plate_candidate:
+        document_type = "Biển số xe"
         suggestions.update({'plate': True})
     if document_type == "Không xác định (Tự chọn)":
         document_type = "Ảnh thường / Ảnh chung"
@@ -158,6 +186,7 @@ def process_and_redact(image_path, output_path, parent_window):
     var_address = tk.BooleanVar(value=suggestions['address'])
     var_cv_contact = tk.BooleanVar(value=suggestions['cv_contact'])
     var_plate = tk.BooleanVar(value=suggestions['plate'])
+    var_driver_license_num = tk.BooleanVar(value=suggestions['driver_license_num'])
 
     tk.Label(
         dialog,
@@ -193,6 +222,7 @@ def process_and_redact(image_path, output_path, parent_window):
     tk.Checkbutton(f2, text="Che Địa chỉ", variable=var_address, bg="#F0F7F4").pack(anchor="w", padx=20)
     tk.Checkbutton(f2, text="Che Email / Số điện thoại tự do", variable=var_cv_contact, bg="#F0F7F4").pack(anchor="w", padx=20)
     tk.Checkbutton(f1, text="Che biển số xe", variable=var_plate, bg="#F0F7F4").pack(anchor="w", padx=20)
+    tk.Checkbutton(f2, text="Che số giấy phép lái xe", variable=var_driver_license_num, bg="#F0F7F4").pack(anchor="w", padx=20)
 
     def on_submit():
         user_choices['face'] = var_face.get()
@@ -205,6 +235,7 @@ def process_and_redact(image_path, output_path, parent_window):
         user_choices['address'] = var_address.get()
         user_choices['cv_contact'] = var_cv_contact.get()
         user_choices['plate'] = var_plate.get()
+        user_choices['driver_license_num'] = var_driver_license_num.get()
         is_submitted[0] = True
         dialog.destroy()
 
@@ -612,7 +643,7 @@ def process_and_redact(image_path, output_path, parent_window):
                 x2 = max(item1['x2'], item2['x2'])
                 y2 = max(item1['y2'], item2['y2'])
                 redact_rect(img_ref, x1 - 8, y1 - 8, x2 + 8, y2 + 8, padding=0)
-
+    
     # ==========================================
     # 6. SỬ DỤNG OCR ĐỂ GOM DÒNG VÀ VẼ CHE
     # ==========================================
@@ -742,6 +773,33 @@ def process_and_redact(image_path, output_path, parent_window):
         'address'
     ]
 
+    def redact_driver_license_number():
+        if not user_choices.get('driver_license_num'):
+            return
+
+        for index, line in enumerate(line_items):
+            norm = line['norm_text']
+
+            if 'so giay phep' in norm:
+                # Trường hợp số nằm cùng dòng với nhãn
+                for item in line['items']:
+                    digits_only = re.sub(r'\D', '', item['text'])
+                    if len(digits_only) >= 6:
+                        redact_boxes.append((item['x1'], item['y1'], item['x2'], item['y2']))
+
+                # Trường hợp số nằm ở dòng ngay bên dưới nhãn
+                if index + 1 < len(line_items):
+                    next_line = line_items[index + 1]
+                    digits_only = re.sub(r'\D', '', next_line['text'])
+
+                    if len(digits_only) >= 6:
+                        box_width = item['x2'] - item['x1']
+                        redact_boxes.append((
+                            next_line['x1'],
+                            next_line['y1'],
+                            next_line['x1'] + int(box_width*1.2),
+                            next_line['y2']
+                        ))
     def redact_cccd_address_by_items():
         """
         Che địa chỉ CCCD theo OCR item (Bản Fix lỗi trôi tọa độ B5-47).
@@ -964,11 +1022,20 @@ def process_and_redact(image_path, output_path, parent_window):
     # để tránh che nguyên cục lớn.
     redact_cccd_address_by_items()
     redact_cccd_name_by_items()
+    redact_driver_license_number()
 
     for index, line in enumerate(line_items):
         is_sensitive = False
         norm = line['norm_text']
         text = line['text']
+
+        if user_choices['id_num'] and any(k in norm for k in ['ma so bhyt', 'so the bhyt', 'ma the bhyt']):
+            for item in line['items']:
+                digits_only = re.sub(r'\D', '', item['text'])
+                if len(digits_only) >= 8:
+                    redact_boxes.append((item['x1'], item['y1'], item['x2'], item['y2']))
+            continue
+
         address_labels = [
             'que quan',
             'place of origin',
