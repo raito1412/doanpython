@@ -69,6 +69,7 @@ def process_and_redact(image_path, output_path, parent_window):
     img_h, img_w = img.shape[:2]
 
     # --- 2. TIỀN XỬ LÝ ẢNH DÀNH CHO OCR ---
+    gray_ocr = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     h, w = gray_img.shape
     max_size = 1200
@@ -103,7 +104,6 @@ def process_and_redact(image_path, output_path, parent_window):
         'plate': False,
     }
     document_type = "Không xác định (Tự chọn)"
-
     if 'can cuoc' in all_ocr_text or 'citizen' in all_ocr_text:
         document_type = "Căn cước công dân (Mặt trước)"
         suggestions.update({
@@ -128,7 +128,9 @@ def process_and_redact(image_path, output_path, parent_window):
     elif any(k in all_ocr_text for k in ['ho so', 'cv', 'resume', 'lien he', 'email', 'dien thoai', 'hoc van', 'kinh nghiem', 'ky nang']):
         document_type = "CV / Hồ sơ cá nhân"
         suggestions.update({'face': True, 'cv_contact': True})
-
+    elif any(k in all_ocr_text for k in ['dang ky xe', 'đăng ký xe', 'chung nhan dang ky xe', 'chứng nhận đăng ký xe']):
+        document_type = "Đăng ký xe"
+        suggestions.update({'plate': True})
     if document_type == "Không xác định (Tự chọn)":
         document_type = "Ảnh thường / Ảnh chung"
         suggestions.update({'face': True, 'cv_contact': True})
@@ -293,8 +295,8 @@ def process_and_redact(image_path, output_path, parent_window):
         sensitive_keywords.extend(['dien thoai', 'so dien thoai', 'phone', 'mobile', 'tel'])
         next_line_keywords.extend(['dien thoai', 'so dien thoai', 'phone', 'mobile', 'tel'])
 
-    sensitive_keywords.extend(['dac diem nhan dang', 'personal identification', 'nhan dang'])
-    multi_line_keywords.extend(['dac diem nhan dang', 'personal identification'])
+    # sensitive_keywords.extend(['dac diem nhan dang', 'personal identification', 'nhan dang'])
+    # multi_line_keywords.extend(['dac diem nhan dang', 'personal identification'])
 
     # ==========================================
     # HÀM HỖ TRỢ VẼ/CHE MỜ (NESTED FUNCTIONS)
@@ -559,32 +561,56 @@ def process_and_redact(image_path, output_path, parent_window):
                 redact_email_rect(x1, y1, x2, y2)
 
     def redact_license_plates(img_ref, ocr_items):
+        # Biển số chuẩn có dạng: 2 số + 1/2 chữ cái + (có thể 1 số) + gạch/chấm + 4/5 số
         plate_patterns = [
-            r'\d{2}[A-Z]{1,2}\d?[-.]?\d{3,5}[.]?\d{0,2}',
-            r'\d{2}[-.]?[A-Z]{1,2}\d?[-.]?\d{3,5}[.]?\d{0,2}',
+            r'\d{2}[A-Z]{1,2}\d?[-.\s]?\d{3,5}[.]?\d{0,2}',
+            r'\d{2}[-.\s]?[A-Z]{1,2}\d?[-.\s]?\d{3,5}[.]?\d{0,2}'
         ]
 
-        items = sorted(ocr_items, key=lambda i: (i['y1'], i['x1']))
-
-        for i in range(len(items)):
-            group = items[i:i + 4]
-
-            text = ''.join(item['text'].upper() for item in group)
+        # 1. ƯU TIÊN QUÉT TỪNG DÒNG LẺ (Dành cho VNeID hoặc biển số ô tô dài)
+        for item in ocr_items:
+            text = item['text'].upper()
             compact = re.sub(r'[^A-Z0-9]', '', text)
 
-            # Bien so thuong co 2 so dau + chu cai + it nhat 4 so
             looks_like_plate = (
                 re.search(r'\d{2}[A-Z]{1,2}\d?', compact)
-                and len(re.findall(r'\d', compact)) >= 6
-                and len(compact) <= 12
+                and len(re.findall(r'\d', compact)) >= 5
+                and 6 <= len(compact) <= 12
             )
 
-            if looks_like_plate or any(re.search(p, compact) for p in plate_patterns):
-                x1 = min(item['x1'] for item in group)
-                y1 = min(item['y1'] for item in group)
-                x2 = max(item['x2'] for item in group)
-                y2 = max(item['y2'] for item in group)
+            # Nếu dòng lẻ này đích thị là biển số
+            if looks_like_plate or any(re.search(p, text) for p in plate_patterns):
+                redact_rect(img_ref, item['x1'] - 8, item['y1'] - 8, item['x2'] + 8, item['y2'] + 8, padding=0)
+                item['is_plate'] = True # Đánh dấu đã che để không gom nhóm nữa
+            else:
+                item['is_plate'] = False
 
+        # 2. QUÉT NHÓM 2 DÒNG (Dành cho biển số xe máy vuông chụp thực tế bị cắt 2 dòng)
+        # Sắp xếp các item chưa bị che theo trục Y (từ trên xuống dưới)
+        remaining_items = sorted([i for i in ocr_items if not i.get('is_plate')], key=lambda i: i['y1'])
+
+        for i in range(len(remaining_items) - 1):
+            item1 = remaining_items[i]
+            item2 = remaining_items[i+1]
+
+            # CHỐT CHẶN AN TOÀN: Khoảng cách dọc giữa 2 dòng không được quá xa (Ngăn việc gom title với biển số)
+            if item2['y1'] - item1['y2'] > int(img_ref.shape[0] * 0.05): 
+                continue
+
+            text = (item1['text'] + item2['text']).upper()
+            compact = re.sub(r'[^A-Z0-9]', '', text)
+
+            looks_like_plate = (
+                re.search(r'\d{2}[A-Z]{1,2}\d?', compact)
+                and len(re.findall(r'\d', compact)) >= 5
+                and 6 <= len(compact) <= 11
+            )
+
+            if looks_like_plate:
+                x1 = min(item1['x1'], item2['x1'])
+                y1 = min(item1['y1'], item2['y1'])
+                x2 = max(item1['x2'], item2['x2'])
+                y2 = max(item1['y2'], item2['y2'])
                 redact_rect(img_ref, x1 - 8, y1 - 8, x2 + 8, y2 + 8, padding=0)
 
     # ==========================================
@@ -692,6 +718,7 @@ def process_and_redact(image_path, output_path, parent_window):
         'dia chi', 'address',
         'gioi tinh', 'sex', 'quoc tich', 'nationality',
         'ho ten', 'ho va ten', 'name',
+        'dac diem nhan dang', 'personal identification', 'nhan dang'
     ]
 
     def next_line_is_another_label(line):
@@ -876,6 +903,7 @@ def process_and_redact(image_path, output_path, parent_window):
         """
         Che Họ và Tên chống góc nghiêng và không đè nhãn.
         Chỉ vẽ hộp đen lên các ký tự IN HOA.
+        Sử dụng Regex .*? để chống lỗi OCR đọc sai dấu / thành chữ cái.
         """
         if not user_choices['name']:
             return
@@ -906,24 +934,32 @@ def process_and_redact(image_path, output_path, parent_window):
                 if item['x1'] < img_w * 0.25:
                     continue
 
-                # Lọc bỏ các khoảng trắng/dấu để kiểm tra chữ IN HOA
                 text_alphas = "".join(c for c in item['text'] if c.isalpha())
                 
-                # TH1: Tên đứng độc lập (Các ô chữ IN HOA tách rời)
-                if len(text_alphas) >= 2 and text_alphas.isupper():
-                    # Đảm bảo OCR không nhận diện nhầm chữ nhãn thành in hoa
-                    if not any(k in norm for k in ['ho', 'ten', 'full', 'name', 'ngay', 'sinh', 'date', 'birth']):
-                        redact_boxes.append((item['x1'] - 2, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
+                # Biến Regex bắt TRỌN VẸN cụm nhãn song ngữ (Sửa lại .*? để nuốt mọi ký tự rác)
+                label_regex = r'(ho va ten.*?full name|ho ten.*?full name|ho va ten|ho ten|full name|name)'
+                has_label = re.search(label_regex, norm)
+
+                # TH1: Tên đứng độc lập (Ô chữ KHÔNG chứa nhãn, chỉ chứa chữ IN HOA)
+                if not has_label:
+                    if len(text_alphas) >= 2 and text_alphas.isupper():
+                        # Đảm bảo không đè nhầm nhãn tiếng Anh
+                        if not any(k in norm for k in ['ngay', 'sinh', 'date', 'birth']):
+                            redact_boxes.append((item['x1'] - 2, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
                 
-                # TH2: Nhãn và Tên bị OCR gộp dính vào nhau (Ví dụ: "Họ và tên: NGUYỄN VĂN A")
+                # TH2: Nhãn và Tên bị OCR gộp dính vào nhau (Ô chữ CÓ chứa nhãn)
                 else:
-                    match = re.search(r'(ho va ten|ho ten|full name|name)\s*:?', norm)
+                    # Nuốt thêm các ký tự đặc biệt ở cuối nhãn
+                    match = re.search(label_regex + r'\s*[:;/\-\|]*', norm)
                     if match:
-                        char_w = (item['x2'] - item['x1']) / max(1, len(norm))
-                        # Bắt điểm cuối của nhãn, dịch sang phải 12 pixel rồi mới bắt đầu che Tên
-                        val_x1 = int(item['x1'] + match.end() * char_w) + 12
-                        if val_x1 < item['x2']:
-                            redact_boxes.append((val_x1, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
+                        # CHỐT CHẶN: Nếu phía sau cái nhãn chỉ còn dư ra 1 ký tự (VD: dấu hai chấm), thì bỏ qua!
+                        if len(norm) - match.end() >= 2:
+                            char_w = (item['x2'] - item['x1']) / max(1, len(norm))
+                            val_x1 = int(item['x1'] + match.end() * char_w) + 8
+                            
+                            if val_x1 < item['x2']:
+                                redact_boxes.append((val_x1, item['y1'] + Y_PAD, item['x2'] + 3, item['y2'] - Y_PAD))
+    
     # Che riêng địa chỉ CCCD theo từng OCR item
     # để tránh che nguyên cục lớn.
     redact_cccd_address_by_items()
