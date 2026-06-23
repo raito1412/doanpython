@@ -484,7 +484,7 @@ class SocialHubUI:
 
         tk.Checkbutton(
             action_row,
-            text="Che dữ liệu bằng AI",
+            text="Che dữ liệu",
             variable=self.post_mask_var,
             bg=THEME["surface"],
             fg=THEME["text"],
