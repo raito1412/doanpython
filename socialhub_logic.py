@@ -133,8 +133,10 @@ def _load_test1_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    if not hasattr(module, "process_and_redact"):
-        raise AttributeError("test1_redaction_logic.py thiếu hàm process_and_redact(image_path, output_path, parent_window).")
+    if not hasattr(module, "handle_input_file") and not hasattr(module, "process_and_redact"):
+        raise AttributeError(
+        "test1_redaction_logic.py thiếu hàm handle_input_file(...) hoặc process_and_redact(...)."
+        )
 
     return module
 
@@ -147,7 +149,10 @@ def run_test1_redaction(image_path, output_path, parent_ui=None):
         test1_module = _load_test1_module()
         
         # GỌI HÀM PHIÊN DỊCH PDF/WORD THAY VÌ HÀM CŨ
-        success = test1_module.handle_input_file(image_path, output_path, parent_ui)
+        if hasattr(test1_module, "handle_input_file"):
+            success = test1_module.handle_input_file(image_path, output_path, parent_ui)
+        else:
+            success = test1_module.process_and_redact(image_path, output_path, parent_ui)
         
         if not success:
             return False, image_path, "Đã hủy hoặc xử lý thất bại."

@@ -9,9 +9,6 @@ from tkinter import messagebox
 from vietocr.tool.predictor import Predictor
 from vietocr.tool.config import Cfg
 from PIL import Image
-import fitz  # PyMuPDF
-from docx2pdf import convert
-from tkinter import filedialog
 import docx
 
 # ==========================================
@@ -874,11 +871,70 @@ def process_and_redact(image_path, output_path, parent_window):
     email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
     phone_pattern = r'(0|84|\+84)[3|5|7|8|9][0-9]{8}\b'
 
+    def add_value_after_label_box(line, label_keywords, right_padding=8):
+        """
+        Chỉ che phần giá trị sau label.
+        Ví dụ:
+        Mã số BHYT: DN4010123456789
+        => giữ lại chữ Mã số BHYT, chỉ che DN4010123456789
+        """
+        norm = line['norm_text']
+
+        for label in label_keywords:
+            label_norm = normalize_text(label)
+
+            if label_norm not in norm:
+                continue
+
+            label_index = norm.find(label_norm)
+            if label_index == -1:
+                continue
+
+            start_char = label_index + len(label_norm)
+
+            # Bỏ qua dấu :, -, /, khoảng trắng sau label
+            while start_char < len(norm) and norm[start_char] in [' ', ':', '-', '/', '|']:
+                start_char += 1
+
+            if start_char >= len(norm):
+                return False
+
+            char_w = (line['x2'] - line['x1']) / max(1, len(norm))
+
+            value_x1 = int(line['x1'] + start_char * char_w) - 2
+            value_x2 = line['x2'] + right_padding
+
+            if value_x2 - value_x1 > 10:
+                redact_boxes.append((
+                    max(0, value_x1),
+                    max(0, line['y1'] - 2),
+                    min(img_w, value_x2),
+                    min(img_h, line['y2'] + 4),
+                ))
+                return True
+
+        return False
+
     for index, line in enumerate(line_items):
         is_sensitive = False
         norm = line['norm_text']
         text = line['text']
+        # --- XỬ LÝ RIÊNG MÃ SỐ BHYT: CHỈ CHE GIÁ TRỊ, KHÔNG CHE CHỮ "MÃ SỐ BHYT" ---
+        if document_type == "Thẻ Bảo hiểm y tế" and user_choices.get('id_num'):
+            bhyt_label_keywords = [
+                'ma so bhyt',
+                'so bhyt',
+                'ma the',
+                'ma so',
+                'so the',
+            ]
 
+            if any(k in norm for k in bhyt_label_keywords):
+                handled = add_value_after_label_box(line, bhyt_label_keywords)
+
+                # Nếu đã xử lý riêng rồi thì bỏ qua generic logic để không che nguyên dòng
+                if handled:
+                    continue
         # Không che các dòng ngày xác thực / hạn dùng của thẻ BHYT
         if document_type == "Thẻ Bảo hiểm y tế":
             if any(k in norm for k in [
@@ -970,7 +1026,20 @@ def process_and_redact(image_path, output_path, parent_window):
         is_id_label_line = user_choices['id_num'] and any(k in norm for k in ['so i no', 'so / no', 'số / no'])
         is_address_related_line = user_choices['address'] and any(k in norm for k in address_keywords)
 
-        if line_has_sensitive_pattern(text) or (has_keyword(norm, sensitive_keywords) and not is_id_label_line and not is_address_related_line):
+        is_bhyt_id_label_line = (
+            document_type == "Thẻ Bảo hiểm y tế"
+            and any(k in norm for k in ['ma so bhyt', 'so bhyt', 'ma the', 'ma so', 'so the'])
+        )
+
+        if (
+            line_has_sensitive_pattern(text)
+            or (
+                has_keyword(norm, sensitive_keywords)
+                and not is_id_label_line
+                and not is_address_related_line
+                and not is_bhyt_id_label_line
+            )
+        ):
             is_sensitive = True
 
         if has_keyword(norm, next_line_keywords):
@@ -1112,105 +1181,342 @@ def process_and_redact(image_path, output_path, parent_window):
 
 # HÀM XỬ LÝ RIÊNG CHO FILE WORD (GIỮ NGUYÊN ĐỊNH DẠNG TEXT)
 # ==========================================
-def process_and_redact_docx(file_path, output_path, parent_window):
-    # 1. HỘP THOẠI CHỌN VÙNG CẦN CHE (Rút gọn cho Text)
-    user_choices = {'id_num': False, 'cv_contact': False, 'dob': False}
+def process_docx_redact(file_path, output_path, parent_window):
+    """
+    Xử lý file Word:
+    - Đọc text trong .docx
+    - Scan trước xem có CCCD, MSSV, Email, SĐT, Ngày sinh không
+    - Cái nào phát hiện được thì mới hiện checkbox và tick sẵn
+    - Nếu có cả CCCD và MSSV thì che cả hai
+    """
+    try:
+        doc = docx.Document(file_path)
+    except Exception as e:
+        messagebox.showerror("Lỗi Word", f"Không thể mở file Word:\n{e}", parent=parent_window)
+        return False
+
+    def remove_accents(text):
+        return ''.join(
+            ch for ch in unicodedata.normalize('NFD', text)
+            if unicodedata.category(ch) != 'Mn'
+        )
+
+    def get_all_docx_text(doc_ref):
+        texts = []
+
+        for para in doc_ref.paragraphs:
+            if para.text.strip():
+                texts.append(para.text)
+
+        for table in doc_ref.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        if para.text.strip():
+                            texts.append(para.text)
+
+        return "\n".join(texts)
+
+    full_text = get_all_docx_text(doc)
+
+    cccd_pattern = r'(?<!\d)\d{12}(?!\d)'
+
+    mssv_label_pattern = (
+    r'(?i)'
+    r'((?:mssv|msv|ma\s*so\s*sinh\s*vien|ma\s*sinh\s*vien|mã\s*số\s*sinh\s*viên|mã\s*sinh\s*viên|student\s*id|student\s*code)'
+    r'\s*[:：\-]?\s*)'
+    r'([A-Za-z0-9]{6,15})'
+    )
+
+    email_pattern = r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z0-9]{2,}'
+    phone_pattern = r'(?<!\d)(?:\+?84|0)[35789]\d{8}(?!\d)'
+    dob_pattern = r'\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b'
+    def has_mssv_column_in_tables(doc_ref):
+        def normalize_cell_text(text):
+            text = ''.join(
+                ch for ch in unicodedata.normalize('NFD', text)
+                if unicodedata.category(ch) != 'Mn'
+            )
+            return re.sub(r'\s+', ' ', text.lower()).strip()
+
+        mssv_headers = [
+            'mssv',
+            'msv',
+            'ma sinh vien',
+            'ma so sinh vien',
+            'student id',
+            'student code',
+        ]
+
+        for table in doc_ref.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    cell_text = normalize_cell_text(cell.text)
+                    if any(header == cell_text or header in cell_text for header in mssv_headers):
+                        return True
+
+        return False
+    detected = {
+        'cccd': bool(re.search(cccd_pattern, full_text)),
+        'mssv': bool(re.search(mssv_label_pattern, full_text)) or has_mssv_column_in_tables(doc),
+        'email': bool(re.search(email_pattern, full_text)),
+        'phone': bool(re.search(phone_pattern, full_text)),
+        'dob': bool(re.search(dob_pattern, full_text)),
+    }
+
+    print("\n===== DỮ LIỆU WORD PHÁT HIỆN ĐƯỢC =====")
+    for key, value in detected.items():
+        print(f"{key}: {value}")
+    print("===== HẾT SCAN WORD =====\n")
+
+    if not any(detected.values()):
+        messagebox.showinfo(
+            "Không có dữ liệu cần che",
+            "Không phát hiện CCCD, MSSV, Email, Số điện thoại hoặc Ngày sinh trong file Word.",
+            parent=parent_window,
+        )
+        return False
+
+    user_choices = {}
     is_submitted = [False]
 
     dialog = tk.Toplevel(parent_window)
     dialog.title("Che thông tin file Word")
-    dialog.geometry("350x250")
+    dialog.geometry("390x320")
     dialog.configure(bg="#F0F7F4")
     dialog.transient(parent_window)
     dialog.grab_set()
 
-    tk.Label(dialog, text="🛠️ ĐIỀU CHỈNH VÙNG CẦN CHE:", bg="#F0F7F4", font=("Arial", 11, "bold")).pack(pady=10)
+    tk.Label(
+        dialog,
+        text="🛠️ HỆ THỐNG PHÁT HIỆN DỮ LIỆU CẦN CHE:",
+        bg="#F0F7F4",
+        fg="#2C3E50",
+        font=("Arial", 11, "bold"),
+    ).pack(pady=(15, 8))
 
     vars_dict = {}
-    options = [
-        ('id_num', "Che Số định danh / Mã sinh viên"),
-        ('cv_contact', "Che Email / Số điện thoại"),
-        ('dob', "Che Ngày sinh")
-    ]
 
-    for key, label in options:
-        var = tk.BooleanVar(value=True) # Mặc định tick sẵn
-        vars_dict[key] = var
-        tk.Checkbutton(dialog, text=label, variable=var, bg="#F0F7F4").pack(anchor="w", padx=40, pady=5)
+    option_labels = {
+        'cccd': "Che CCCD / Số định danh",
+        'mssv': "Che MSSV / Mã sinh viên",
+        'email': "Che Email",
+        'phone': "Che Số điện thoại",
+        'dob': "Che Ngày sinh",
+    }
+
+    frame = tk.LabelFrame(
+        dialog,
+        text=" Dữ liệu phát hiện được ",
+        bg="#F0F7F4",
+        font=("Arial", 10, "bold"),
+        padx=10,
+        pady=8,
+    )
+    frame.pack(fill="x", padx=30, pady=8)
+
+    for key, label in option_labels.items():
+        if detected.get(key):
+            var = tk.BooleanVar(value=True)
+            vars_dict[key] = var
+            tk.Checkbutton(
+                frame,
+                text=label,
+                variable=var,
+                bg="#F0F7F4",
+                activebackground="#F0F7F4",
+            ).pack(anchor="w", padx=15, pady=4)
 
     def on_submit():
-        for key in user_choices.keys():
-            user_choices[key] = vars_dict[key].get()
+        for key, var in vars_dict.items():
+            user_choices[key] = var.get()
         is_submitted[0] = True
         dialog.destroy()
 
-    tk.Button(dialog, text="Xác nhận & Xử lý Word", command=on_submit, bg="#A8DADC", font=("Arial", 10, "bold"), padx=15).pack(pady=20)
-    
+    tk.Button(
+        dialog,
+        text="Xác nhận & Xử lý Word",
+        command=on_submit,
+        bg="#A8DADC",
+        fg="#1D3557",
+        font=("Arial", 10, "bold"),
+        padx=15,
+        pady=5,
+        cursor="hand2",
+    ).pack(pady=15)
+
     parent_window.wait_window(dialog)
 
     if not is_submitted[0]:
+        print("Đã hủy xử lý file Word.")
         return False
 
-    # 2. ĐỌC VÀ THAY THẾ TEXT TRONG FILE WORD
-    try:
-        doc = docx.Document(file_path)
-        
-        def redact_text(text):
-            # Thay thế Mã số (9-13 số)
-            if user_choices['id_num']:
-                text = re.sub(r'\b\d{9,13}\b', '***', text)
-            # Thay thế SĐT và Email
-            if user_choices['cv_contact']:
-                text = re.sub(r'(0|84|\+84)[3|5|7|8|9][0-9]{8}\b', '[ĐÃ CHE SĐT]', text)
-                text = re.sub(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z0-9]{2,}', '[ĐÃ CHE EMAIL]', text)
-            # Thay thế Ngày sinh
-            if user_choices['dob']:
-                text = re.sub(r'\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b', '[ĐÃ CHE NGÀY SINH]', text)
+    def redact_text(text):
+        if not text:
             return text
-        # HÀM MỚI: Duyệt qua từng run để không làm mất ảnh
-        def process_paragraphs(paragraphs):
-            for para in paragraphs:
-                for run in para.runs:
-                    # Kiểm tra xem run có chứa ảnh không (thường là InlineShapes)
-                    # Nếu run không phải là ảnh, mới thay thế text
-                    if not run.element.xpath('.//a:blip'): # Kiểm tra XML của ảnh
-                        run.text = redact_text(run.text)
-        # Quét các đoạn văn bản thường
-        process_paragraphs(doc.paragraphs)
-            
-        # Quét các đoạn văn bản nằm trong Bảng (Table)
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for para in cell.paragraphs:
-                        para.text = redact_text(para.text)
 
+        # Che MSSV có label trước
+        if user_choices.get('mssv'):
+            text = re.sub(
+                mssv_label_pattern,
+                lambda m: m.group(1) + '***',
+                text,
+            )
+
+            # Che MSSV dạng đứng một mình trong text
+            # Ví dụ: 22110156, 3121410313, SV2211001, DCT123456
+            # Không che CCCD 12 số ở đây để tránh đụng CCCD
+            text = re.sub(
+                r'(?<![A-Za-z0-9])(?:[A-Za-z]{1,5}\d{5,12}|\d{6,11})(?![A-Za-z0-9])',
+                '***',
+                text,
+            )
+
+        # Che CCCD sau
+        if user_choices.get('cccd'):
+            text = re.sub(cccd_pattern, '***', text)
+
+        if user_choices.get('email'):
+            text = re.sub(email_pattern, '***', text)
+
+        if user_choices.get('phone'):
+            text = re.sub(phone_pattern, '***', text)
+
+        if user_choices.get('dob'):
+            text = re.sub(dob_pattern, '***', text)
+
+        return text
+
+
+    def redact_mssv_column_in_tables(doc_ref):
+        """
+        Xử lý MSSV dạng bảng:
+        Nếu tìm thấy cột có header là MSSV / MSV / Mã sinh viên,
+        thì che toàn bộ dữ liệu nằm bên dưới cột đó trong TẤT CẢ bảng của file Word.
+        """
+
+        def normalize_cell_text(text):
+            text = ''.join(
+                ch for ch in unicodedata.normalize('NFD', text)
+                if unicodedata.category(ch) != 'Mn'
+            )
+            return re.sub(r'\s+', ' ', text.lower()).strip()
+
+        mssv_headers = [
+            'mssv',
+            'msv',
+            'ma sinh vien',
+            'ma so sinh vien',
+            'student id',
+            'student code',
+        ]
+
+        found_any = False
+
+        for table_index, table in enumerate(doc_ref.tables):
+            mssv_col_indexes = []
+            header_row_index = None
+
+            for row_index, row in enumerate(table.rows):
+                for col_index, cell in enumerate(row.cells):
+                    header_text = normalize_cell_text(cell.text)
+
+                    if any(header == header_text or header in header_text for header in mssv_headers):
+                        if col_index not in mssv_col_indexes:
+                            mssv_col_indexes.append(col_index)
+
+                        header_row_index = row_index
+                        found_any = True
+                        print(
+                            f"📌 Phát hiện cột MSSV tại table={table_index}, "
+                            f"row={row_index}, col={col_index}"
+                        )
+
+                if mssv_col_indexes:
+                    break
+
+            if not mssv_col_indexes or header_row_index is None:
+                continue
+
+            for data_row in table.rows[header_row_index + 1:]:
+                for col_index in mssv_col_indexes:
+                    if col_index >= len(data_row.cells):
+                        continue
+
+                    target_cell = data_row.cells[col_index]
+                    cell_value = target_cell.text.strip()
+
+                    # Che tất cả ô có dữ liệu trong cột MSSV
+                    if cell_value:
+                        target_cell.text = '***'
+
+        return found_any
+
+
+    def process_paragraphs(paragraphs):
+        for para in paragraphs:
+            has_image = any(run.element.xpath('.//a:blip') for run in para.runs)
+            if has_image:
+                continue
+
+            full_para_text = para.text
+            if not full_para_text:
+                continue
+
+            redacted_para_text = redact_text(full_para_text)
+
+            if redacted_para_text != full_para_text:
+                para.text = redacted_para_text
+
+
+    # 1. Quét text thường ngoài bảng
+    process_paragraphs(doc.paragraphs)
+
+    # 2. Che riêng MSSV dạng cột dọc trong bảng
+    if user_choices.get('mssv'):
+        redact_mssv_column_in_tables(doc)
+
+    # 3. Quét toàn bộ text còn lại trong bảng
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                process_paragraphs(cell.paragraphs)
+
+    try:
         doc.save(output_path)
         print(f"✨ Đã lưu file Word thành công vào: {output_path}")
         return True
-
     except Exception as e:
-        messagebox.showerror("Lỗi Word", f"Không thể xử lý file Word:\n{e}", parent=parent_window)
-        return False
-def handle_input_file(file_path, output_path, parent_window):
-    """Xử lý ảnh (jpg/png) và file Word (doc/docx)"""
-    ext = file_path.lower().split('.')[-1]
-    
-    # 1. TRƯỜNG HỢP GỬI FILE WORD
-    if ext in ['doc', 'docx']:
-        print("🔄 Xử lý file Word...")
-        out_docx_path = output_path.rsplit('.', 1)[0] + ".docx"
-        is_success = process_and_redact_docx(file_path, out_docx_path, parent_window)
-        if is_success:
-            # Nếu file đã đổi tên, ta trả về đường dẫn mới cho SocialHub
-            if os.path.exists(out_docx_path):
-                return True
+        messagebox.showerror("Lỗi Word", f"Không thể lưu file Word:\n{e}", parent=parent_window)
         return False
 
-    # 2. TRƯỜNG HỢP LÀ ẢNH GỐC
-    elif ext in ['jpg', 'jpeg', 'png', 'bmp', 'webp']:
-        return process_and_redact(file_path, output_path, parent_window)
-        
-    else:
-        messagebox.showerror("Định dạng", f"Định dạng .{ext} không được hỗ trợ!", parent=parent_window)
+
+def handle_input_file(file_path, output_path, parent_window):
+    """
+    Router xử lý input:
+    - Ảnh thì gọi process_and_redact()
+    - Word thì gọi process_docx_redact()
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == '.doc':
+        messagebox.showerror(
+            "Định dạng Word",
+            "Hiện tại hệ thống chỉ hỗ trợ file .docx. Vui lòng lưu file Word sang .docx rồi thử lại.",
+            parent=parent_window,
+        )
         return False
+
+    if ext == '.docx':
+        out_docx_path = os.path.splitext(output_path)[0] + ".docx"
+        return process_docx_redact(file_path, out_docx_path, parent_window)
+
+    if ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+        return process_and_redact(file_path, output_path, parent_window)
+
+    messagebox.showerror(
+        "Định dạng",
+        f"Định dạng {ext} không được hỗ trợ!",
+        parent=parent_window,
+    )
+    return False

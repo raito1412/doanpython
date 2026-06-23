@@ -489,13 +489,13 @@ class SocialHubUI:
         self.post_preview_label.pack(side="left", padx=(0, 10))
         self.post_preview_name = tk.Label(self.post_preview_frame, text="", bg=THEME["surface_2"], fg=THEME["text"], font=(FONT, 9, "bold"))
         self.post_preview_name.pack(side="left", fill="x", expand=True)
-        make_button(self.post_preview_frame, "Bỏ ảnh", self.remove_post_image, "danger").pack(side="right")
+        make_button(self.post_preview_frame, "Bỏ dữ liệu", self.remove_post_image, "danger").pack(side="right")
         self.post_preview_frame.pack_forget()
 
         action_row = tk.Frame(box, bg=THEME["surface"])
         action_row.pack(fill="x", pady=(2, 0))
 
-        make_button(action_row, "🖼  Thêm ảnh", self.choose_post_image, "soft").pack(side="left")
+        make_button(action_row, "🖼  Thêm dữ liệu", self.choose_post_image, "soft").pack(side="left")
 
         tk.Checkbutton(
             action_row,
