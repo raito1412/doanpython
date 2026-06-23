@@ -140,35 +140,20 @@ def _load_test1_module():
 
 
 def run_test1_redaction(image_path, output_path, parent_ui=None):
-    """
-    Cầu nối duy nhất giữa UI và test1_redaction_logic.py.
-
-    Luồng chạy:
-    UI chọn ảnh + tick che AI
-        -> socialhub_logic.run_test1_redaction()
-        -> test1_redaction_logic.process_and_redact()
-        -> lưu ảnh đã che vào output_path
-
-    Không viết lại OCR, không viết lại vùng che, không sửa giao diện.
-    """
     if not image_path or not os.path.exists(image_path):
-        return False, image_path, "Không tìm thấy ảnh."
-
+        return False, image_path, "Không tìm thấy tài liệu."
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         test1_module = _load_test1_module()
-        success = test1_module.process_and_redact(image_path, output_path, parent_ui)
-
+        
+        # GỌI HÀM PHIÊN DỊCH PDF/WORD THAY VÌ HÀM CŨ
+        success = test1_module.handle_input_file(image_path, output_path, parent_ui)
+        
         if not success:
-            return False, image_path, "Đã hủy hoặc xử lý ảnh thất bại."
-
-        if not os.path.exists(output_path):
-            return False, image_path, "test1_redaction_logic.py chưa tạo ảnh output."
-
-        return True, output_path, "Đã xử lý ảnh bằng test1.py."
-
+            return False, image_path, "Đã hủy hoặc xử lý thất bại."
+        return True, output_path, "Đã xử lý an toàn."
     except Exception as exc:
-        return False, image_path, f"Lỗi khi gọi test1_redaction_logic.py: {exc}"
+        return False, image_path, f"Lỗi gọi AI: {exc}"
 
 
 def process_image(image_path, output_path, parent_ui=None):
@@ -338,11 +323,16 @@ class SocialAppLogic:
         info_message = ""
 
         if mask_val == 1 and image_path:
-            filename = f"redact_post_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ['.doc', '.docx']: ext = '.docx'
+            elif ext == '.pdf': ext = '.pdf'
+            else: ext = '.jpg'
+            
+            filename = f"redact_post_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{ext}"
             output_path = os.path.join(PROCESSED_IMG_DIR, filename)
+            
             ok, result_path, msg = run_test1_redaction(image_path, output_path, parent_ui)
-            if not ok:
-                return False, msg
+            if not ok: return False, msg
             final_image_path = result_path
             info_message = msg
 
@@ -503,11 +493,16 @@ class SocialAppLogic:
         info_message = ""
 
         if mask_val == 1 and image_path:
-            filename = f"redact_chat_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+            ext = os.path.splitext(image_path)[1].lower()
+            if ext in ['.doc', '.docx']: ext = '.docx'
+            elif ext == '.pdf': ext = '.pdf'
+            else: ext = '.jpg'
+            
+            filename = f"redact_chat_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{ext}"
             output_path = os.path.join(PROCESSED_IMG_DIR, filename)
+            
             ok, result_path, msg = run_test1_redaction(image_path, output_path, parent_ui)
-            if not ok:
-                return False, msg
+            if not ok: return False, msg
             final_image_path = result_path
             info_message = msg
 

@@ -1,7 +1,8 @@
 import os
+import platform      # Thêm dòng này
+import subprocess
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
-
 from PIL import Image, ImageTk
 
 
@@ -33,7 +34,21 @@ def hand(widget):
         pass
     return widget
 
-
+def open_document(filepath):
+    """Hàm hỗ trợ mở file bằng ứng dụng mặc định của hệ điều hành (ví dụ: MS Word)"""
+    if not os.path.exists(filepath):
+        messagebox.showerror("Lỗi", "Không tìm thấy file trên hệ thống!")
+        return
+    try:
+        if platform.system() == 'Windows':
+            os.startfile(filepath)
+        elif platform.system() == 'Darwin':  # macOS
+            subprocess.call(('open', filepath))
+        else:  # Linux
+            subprocess.call(('xdg-open', filepath))
+    except Exception as e:
+        messagebox.showerror("Lỗi", f"Không thể mở file: {e}")
+        
 def make_button(parent, text, command=None, variant="primary", width=None):
     colors = {
         "primary": (THEME["primary"], "#FFFFFF", THEME["primary_dark"]),
@@ -496,16 +511,28 @@ class SocialHubUI:
         make_button(action_row, "Đăng bài", self.publish_post, "primary").pack(side="right")
 
     def choose_post_image(self):
+        # Bỏ 'pdf' ra khỏi danh sách
         path = filedialog.askopenfilename(
-            title="Chọn hình ảnh",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.webp *.tiff"), ("All files", "*.*")]
+            title="Chọn tài liệu",
+            filetypes=[("Tài liệu/Ảnh", "*.png *.jpg *.jpeg *.docx *.doc"), ("Hình ảnh", "*.png *.jpg *.jpeg *.bmp *.webp")]
         )
         if path:
             self.post_image_path = path
-            img = Image.open(path)
-            img.thumbnail((96, 96))
-            self.post_preview_photo = ImageTk.PhotoImage(img)
-            self.post_preview_label.config(image=self.post_preview_photo)
+            ext = path.lower().split('.')[-1]
+            
+            # Chỉ hiển thị tài liệu nếu là Word
+            if ext in ['doc', 'docx']:
+                self.post_preview_photo = None
+                self.post_preview_label.config(image="", text="📄 [Tài liệu Word]", fg=THEME["primary"])
+            else:
+                # Xử lý hiển thị Thumbnail cho ảnh như cũ
+                try:
+                    img = Image.open(path)
+                    img.thumbnail((96, 96))
+                    self.post_preview_photo = ImageTk.PhotoImage(img)
+                    self.post_preview_label.config(image=self.post_preview_photo, text="")
+                except Exception: pass
+            
             self.post_preview_name.config(text=os.path.basename(path))
             self.post_preview_frame.pack(fill="x", pady=(0, 10))
 
@@ -587,23 +614,54 @@ class SocialHubUI:
                 justify="left",
             ).pack(anchor="w", fill="x", pady=(14, 10))
 
+        # ==========================================
+        # XỬ LÝ ĐÍNH KÈM (ẢNH HOẶC FILE WORD)
+        # ==========================================
         if post["image_path"] and os.path.exists(post["image_path"]):
-            try:
-                img = Image.open(post["image_path"])
-                img.thumbnail((620, 420))
-                photo = ImageTk.PhotoImage(img)
-                self.feed_images[f"p_{post['id']}"] = photo
+            ext = post["image_path"].lower().split('.')[-1]
+            
+            # ==========================================
+        if post["image_path"] and os.path.exists(post["image_path"]):
+            ext = post["image_path"].lower().split('.')[-1]
+            
+            if ext in ['doc', 'docx', 'pdf']:
+                file_name = os.path.basename(post["image_path"])
+                doc_box = tk.Frame(p_frame, bg=THEME["surface_2"], padx=15, pady=12)
+                doc_box.pack(anchor="w", fill="x", pady=(2, 10))
+                
+                # Biến Label thành một đường link có thể click
+                link_label = tk.Label(
+                    doc_box, 
+                    text=f"📄 Tài liệu: {file_name}", 
+                    bg=THEME["surface_2"], 
+                    fg=THEME["primary"], 
+                    font=(FONT, 10, "bold", "underline"), # Gạch chân cho giống link
+                    cursor="hand2" # Đổi con trỏ chuột thành hình bàn tay
+                )
+                link_label.pack(anchor="w")
+                
+                # Gán sự kiện click chuột trái để mở file
+                link_label.bind("<Button-1>", lambda e, path=post["image_path"]: open_document(path))
+                
+                tk.Label(doc_box, text="(Văn bản đã được AI quét và che thông tin)", bg=THEME["surface_2"], fg=THEME["muted"], font=(FONT, 9, "italic")).pack(anchor="w", pady=(2, 0))
+            else:
+                # Giao diện hiển thị Hình ảnh như cũ
+                try:
+                    img = Image.open(post["image_path"])
+                    img.thumbnail((620, 420))
+                    photo = ImageTk.PhotoImage(img)
+                    self.feed_images[f"p_{post['id']}"] = photo
 
-                image_box = tk.Frame(p_frame, bg=THEME["surface_2"], padx=10, pady=10)
-                image_box.pack(anchor="w", fill="x", pady=(2, 10))
-                tk.Label(image_box, image=photo, bg=THEME["surface_2"]).pack(anchor="center")
-            except Exception:
-                pass
+                    image_box = tk.Frame(p_frame, bg=THEME["surface_2"], padx=10, pady=10)
+                    image_box.pack(anchor="w", fill="x", pady=(2, 10))
+                    tk.Label(image_box, image=photo, bg=THEME["surface_2"]).pack(anchor="center")
+                except Exception:
+                    pass
 
         if post.get("mask_enabled"):
             tk.Label(
                 p_frame,
-                text="🛡 Ảnh đã được xử lý che thông tin nhạy cảm",
+                text="🛡 Dữ liệu đã được xử lý che thông tin nhạy cảm",
                 bg=THEME["surface"],
                 fg=THEME["muted"],
                 font=(FONT, 9, "italic"),
@@ -750,17 +808,29 @@ class ChatPanel:
 
     def choose_image(self):
         path = filedialog.askopenfilename(
-            title="Chọn ảnh",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp *.webp *.tiff"), ("All files", "*.*")]
+            title="Chọn tài liệu gửi",
+            filetypes=[
+                ("Tất cả tài liệu", "*.png *.jpg *.jpeg *.bmp *.webp *.pdf *.doc *.docx"),
+                ("Hình ảnh", "*.png *.jpg *.jpeg *.bmp *.webp"), 
+                ("Tài liệu (PDF/Word)", "*.pdf *.doc *.docx")
+            ]
         )
         if path:
             self.selected_image_path = path
+            ext = path.lower().split('.')[-1]
 
-            img = Image.open(path)
-            img.thumbnail((68, 68))
-            self.preview_photo = ImageTk.PhotoImage(img)
+            if ext in ['pdf', 'doc', 'docx']:
+                self.preview_photo = None
+                self.preview_label.config(image="", text="📄", fg=THEME["primary"], font=(FONT, 20))
+            else:
+                try:
+                    img = Image.open(path)
+                    img.thumbnail((68, 68))
+                    self.preview_photo = ImageTk.PhotoImage(img)
+                    self.preview_label.config(image=self.preview_photo, text="")
+                except Exception:
+                    pass
 
-            self.preview_label.config(image=self.preview_photo)
             self.preview_name.config(text=os.path.basename(path))
             self.preview_frame.pack(fill="x", pady=(0, 8))
 
@@ -816,16 +886,41 @@ class ChatPanel:
                     pady=2,
                 ).pack(anchor="w")
 
+            # ==========================================
+            # XỬ LÝ ĐÍNH KÈM TRONG CHAT
+            # ==========================================
             if msg["image_path"] and os.path.exists(msg["image_path"]):
-                try:
-                    img = Image.open(msg["image_path"])
-                    img.thumbnail((220, 220))
-                    photo = ImageTk.PhotoImage(img)
-                    self.image_store.append(photo)
+                ext = msg["image_path"].lower().split('.')[-1]
+                
+                if ext in ['doc', 'docx', 'pdf']:
+                    file_name = os.path.basename(msg["image_path"])
+                    
+                    # Tạo Label giống link trong bong bóng chat
+                    link_label = tk.Label(
+                        bubble,
+                        text=f"📄 {file_name}",
+                        bg=bubble_bg,
+                        fg=bubble_fg,
+                        font=(FONT, 10, "bold", "underline"),
+                        cursor="hand2",
+                        wraplength=220,
+                        justify="left"
+                    )
+                    link_label.pack(anchor="w", pady=(5, 0))
+                    
+                    # Gán sự kiện click chuột
+                    link_label.bind("<Button-1>", lambda e, path=msg["image_path"]: open_document(path))
+                    
+                else:
+                    try:
+                        img = Image.open(msg["image_path"])
+                        img.thumbnail((220, 220))
+                        photo = ImageTk.PhotoImage(img)
+                        self.image_store.append(photo)
 
-                    tk.Label(bubble, image=photo, bg=bubble_bg).pack(anchor="w", pady=(5, 0))
-                except Exception:
-                    pass
+                        tk.Label(bubble, image=photo, bg=bubble_bg).pack(anchor="w", pady=(5, 0))
+                    except Exception:
+                        pass
 
         self.window.after(50, lambda: self.canvas.yview_moveto(1.0))
 
