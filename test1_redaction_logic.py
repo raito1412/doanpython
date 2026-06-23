@@ -87,6 +87,7 @@ def process_and_redact(image_path, output_path, parent_window):
     print("===== HẾT EASY OCR =====\n")
 
     print("🔍 Hệ thống đang phân tích loại giấy tờ để đưa ra đề xuất...")
+    raw_ocr_text = " ".join([res[1] for res in pre_results])
     all_ocr_text = " ".join([res[1].lower() for res in pre_results])
     all_ocr_text = unicodedata.normalize('NFD', all_ocr_text)
     all_ocr_text = "".join(ch for ch in all_ocr_text if unicodedata.category(ch) != 'Mn')
@@ -196,9 +197,70 @@ def process_and_redact(image_path, output_path, parent_window):
         document_type = "Biển số xe"
         suggestions.update({'plate': True})
 
+        # Nếu ảnh không thuộc loại giấy tờ nào, kiểm tra xem OCR có dữ liệu nhạy cảm thật không
     if document_type == "Không xác định (Tự chọn)":
-        document_type = "Ảnh thường / Ảnh chung"
-        suggestions.update({'face': True, 'cv_contact': True, 'id_num': True, 'name': True, 'dob': True,})
+        email_pattern_detect = r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z0-9]{2,}'
+        phone_pattern_detect = r'(?<!\d)(?:\+?84|0)[35789]\d{8}(?!\d)'
+        id_pattern_detect = r'(?<!\d)\d{9,13}(?!\d)'
+        dob_pattern_detect = r'\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b'
+
+        has_email = re.search(email_pattern_detect, raw_ocr_text) is not None
+        has_phone = re.search(phone_pattern_detect, raw_ocr_text) is not None
+        has_id_num = re.search(id_pattern_detect, raw_ocr_text) is not None
+        has_dob = re.search(dob_pattern_detect, raw_ocr_text) is not None
+
+        has_sensitive_keyword = any(k in all_ocr_text for k in [
+            'email',
+            'mail',
+            'dien thoai',
+            'so dien thoai',
+            'phone',
+            'mobile',
+            'cccd',
+            'can cuoc',
+            'cmnd',
+            'so dinh danh',
+            'ma sinh vien',
+            'mssv',
+            'msv',
+            'ngay sinh',
+            'sinh ngay',
+            'date of birth',
+            'dob',
+        ])
+
+        has_sensitive_data = (
+            has_email
+            or has_phone
+            or has_id_num
+            or has_dob
+            or has_sensitive_keyword
+            or has_plate_candidate
+        )
+
+        if not has_sensitive_data:
+            messagebox.showinfo(
+                "Không có dữ liệu nhạy cảm",
+                "Không phát hiện dữ liệu nhạy cảm cần che trong ảnh này.",
+                parent=parent_window,
+            )
+            return False
+
+        document_type = "Ảnh thường có dữ liệu nhạy cảm"
+
+        suggestions.update({
+            'face': False,
+            'barcode': False,
+            'finger': False,
+            'qr': False,
+            'id_num': has_id_num or 'cccd' in all_ocr_text or 'cmnd' in all_ocr_text or 'mssv' in all_ocr_text,
+            'name': False,
+            'dob': has_dob or 'ngay sinh' in all_ocr_text or 'sinh ngay' in all_ocr_text,
+            'address': False,
+            'cv_contact': has_email or has_phone or 'email' in all_ocr_text or 'dien thoai' in all_ocr_text or 'phone' in all_ocr_text,
+            'plate': has_plate_candidate,
+            'driver_license_num': False,
+        })
 
     print(f"📌 HỆ THỐNG ĐỀ XUẤT: [{document_type}]")
 
