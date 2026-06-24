@@ -1308,6 +1308,7 @@ def process_docx_redact(file_path, output_path, parent_window):
             'ma so sinh vien',
             'student id',
             'student code',
+            'ma sv'
         ]
 
         for table in doc_ref.tables:
